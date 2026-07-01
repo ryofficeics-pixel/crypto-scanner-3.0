@@ -321,15 +321,21 @@ export function scanSymbol(
   else if (signalCount >= 2) tier = "B";
 
   // ATR-based TP/SL (1h ATR — matches setup-confirmation timeframe)
-  const atr        = ind1h.atr ?? price * 0.02; // fallback only for very new listings
-  const stopLoss   = price - 1.5 * atr;
+  // Multipliers chosen so R:R is mathematically achievable:
+  //   SL  = 1.0 × ATR below entry  → risk = 1 ATR
+  //   TP1 = 2.0 × ATR above entry  → R:R = 2.0  (enforced minimum)
+  //   TP2 = 3.5 × ATR above entry  → R:R = 3.5
+  // Previous values (SL=1.5×, TP1=2.0×) gave R:R=1.33 which ALWAYS
+  // failed the ≥2.0 gate, vetoing every single result.
+  const atr         = ind1h.atr ?? price * 0.02; // fallback only for very new listings
+  const stopLoss    = price - 1.0 * atr;
   const takeProfit1 = price + 2.0 * atr;
   const takeProfit2 = price + 3.5 * atr;
-  const risk        = price - stopLoss;
+  const risk         = price - stopLoss;
   const riskRewardT1 = risk > 0 ? (takeProfit1 - price) / risk : 0;
   const riskRewardT2 = risk > 0 ? (takeProfit2 - price) / risk : 0;
 
-  // Enforce minimum 1:2 R:R at TP1
+  // Enforce minimum 1:2 R:R at TP1 (now always met: 2.0 ATR / 1.0 ATR = 2.0)
   if (riskRewardT1 < 2 && tier !== "NONE") tier = "NONE";
 
   // Nearest buy-side liquidity below price (for UI display)
