@@ -3,6 +3,10 @@
 // identify swing highs/lows by requiring a minimum % retracement before
 // flipping direction. This produces the pivot points used for market
 // structure (BOS/CHoCH) and chart pattern detection.
+//
+// v3.0 fix: flush the trailing (still-forming) extreme at the end of the loop
+// so the most recent swing is always included in pivot output. Without this,
+// the latest BOS/CHoCH event is often invisible to detectStructure.
 
 import type { Candle } from "./binance";
 
@@ -33,7 +37,7 @@ export function computeZigZag(candles: Candle[], deviationPct = 2): Pivot[] {
     const c = candles[i];
 
     if (trend === null) {
-      const upMove = ((c.high - lastPivotPrice) / lastPivotPrice) * 100;
+      const upMove   = ((c.high - lastPivotPrice) / lastPivotPrice) * 100;
       const downMove = ((lastPivotPrice - c.low) / lastPivotPrice) * 100;
       if (upMove >= deviationPct) {
         trend = "up";
@@ -54,7 +58,12 @@ export function computeZigZag(candles: Candle[], deviationPct = 2): Pivot[] {
       }
       const retrace = ((extremeHigh - c.low) / extremeHigh) * 100;
       if (retrace >= deviationPct) {
-        pivots.push({ index: extremeHighIdx, price: extremeHigh, type: "high", time: candles[extremeHighIdx].closeTime });
+        pivots.push({
+          index: extremeHighIdx,
+          price: extremeHigh,
+          type: "high",
+          time: candles[extremeHighIdx].closeTime
+        });
         lastPivotPrice = extremeHigh;
         trend = "down";
         extremeLow = c.low;
@@ -67,7 +76,12 @@ export function computeZigZag(candles: Candle[], deviationPct = 2): Pivot[] {
       }
       const retrace = ((c.high - extremeLow) / extremeLow) * 100;
       if (retrace >= deviationPct) {
-        pivots.push({ index: extremeLowIdx, price: extremeLow, type: "low", time: candles[extremeLowIdx].closeTime });
+        pivots.push({
+          index: extremeLowIdx,
+          price: extremeLow,
+          type: "low",
+          time: candles[extremeLowIdx].closeTime
+        });
         lastPivotPrice = extremeLow;
         trend = "up";
         extremeHigh = c.high;
@@ -76,47 +90,69 @@ export function computeZigZag(candles: Candle[], deviationPct = 2): Pivot[] {
     }
   }
 
+  // Flush the trailing extreme that has been tracked but not yet confirmed
+  // by a reversal. Without this, the most recent swing high/low is invisible
+  // to detectStructure and pattern detection.
+  if (trend === "up" && extremeHighIdx > (pivots[pivots.length - 1]?.index ?? -1)) {
+    pivots.push({
+      index: extremeHighIdx,
+      price: extremeHigh,
+      type: "high",
+      time: candles[extremeHighIdx].closeTime
+    });
+  } else if (trend === "down" && extremeLowIdx > (pivots[pivots.length - 1]?.index ?? -1)) {
+    pivots.push({
+      index: extremeLowIdx,
+      price: extremeLow,
+      type: "low",
+      time: candles[extremeLowIdx].closeTime
+    });
+  }
+
   return pivots;
 }
 
-export type StructureEvent = "BOS_BULLISH" | "BOS_BEARISH" | "CHOCH_BULLISH" | "CHOCH_BEARISH" | "NONE";
+export type StructureEvent =
+  | "BOS_BULLISH"
+  | "BOS_BEARISH"
+  | "CHOCH_BULLISH"
+  | "CHOCH_BEARISH"
+  | "NONE";
 
 /**
- * Determines market structure state from the last few pivots.
- * BOS (Break of Structure) = continuation of existing trend, price breaks
- *   beyond the prior same-type pivot in the trend direction.
- * CHoCH (Change of Character) = trend reversal signal, price breaks
- *   structure in the OPPOSITE direction of the prevailing trend.
+ * Determines market structure state from the last few confirmed pivots.
+ *
+ * BOS  (Break of Structure) = price continues in the trend direction,
+ *       breaking beyond the prior same-type pivot.
+ * CHoCH (Change of Character) = price breaks structure in the OPPOSITE
+ *       direction — potential trend reversal.
  */
-export function detectStructure(pivots: Pivot[]): { event: StructureEvent; trend: "up" | "down" | "ranging" } {
+export function detectStructure(
+  pivots: Pivot[]
+): { event: StructureEvent; trend: "up" | "down" | "ranging" } {
   if (pivots.length < 4) return { event: "NONE", trend: "ranging" };
 
   const highs = pivots.filter((p) => p.type === "high").slice(-3);
-  const lows = pivots.filter((p) => p.type === "low").slice(-3);
+  const lows  = pivots.filter((p) => p.type === "low").slice(-3);
 
   if (highs.length < 2 || lows.length < 2) return { event: "NONE", trend: "ranging" };
 
   const higherHighs = highs[highs.length - 1].price > highs[highs.length - 2].price;
-  const higherLows = lows[lows.length - 1].price > lows[lows.length - 2].price;
-  const lowerHighs = highs[highs.length - 1].price < highs[highs.length - 2].price;
-  const lowerLows = lows[lows.length - 1].price < lows[lows.length - 2].price;
+  const higherLows  = lows[lows.length - 1].price  > lows[lows.length - 2].price;
+  const lowerHighs  = highs[highs.length - 1].price < highs[highs.length - 2].price;
+  const lowerLows   = lows[lows.length - 1].price  < lows[lows.length - 2].price;
 
   let trend: "up" | "down" | "ranging" = "ranging";
-  if (higherHighs && higherLows) trend = "up";
+  if (higherHighs && higherLows)   trend = "up";
   else if (lowerHighs && lowerLows) trend = "down";
 
   const lastPivot = pivots[pivots.length - 1];
   let event: StructureEvent = "NONE";
 
-  if (trend === "up" && lastPivot.type === "low" && higherLows) {
-    event = "BOS_BULLISH";
-  } else if (trend === "down" && lastPivot.type === "high" && lowerHighs) {
-    event = "BOS_BEARISH";
-  } else if (lastPivot.type === "low" && lowerLows && trend !== "down") {
-    event = "CHOCH_BEARISH";
-  } else if (lastPivot.type === "high" && higherHighs && trend !== "up") {
-    event = "CHOCH_BULLISH";
-  }
+  if      (trend === "up"   && lastPivot.type === "low"  && higherLows)  event = "BOS_BULLISH";
+  else if (trend === "down" && lastPivot.type === "high" && lowerHighs)  event = "BOS_BEARISH";
+  else if (lastPivot.type === "low"  && lowerLows   && trend !== "down") event = "CHOCH_BEARISH";
+  else if (lastPivot.type === "high" && higherHighs && trend !== "up")   event = "CHOCH_BULLISH";
 
   return { event, trend };
 }

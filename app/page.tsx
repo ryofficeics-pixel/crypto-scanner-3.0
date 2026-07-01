@@ -44,10 +44,10 @@ function fmtVol(v: number): string {
 
 function fmtAge(isoDate: string): { label: string; cls: string } {
   const secs = Math.floor((Date.now() - new Date(isoDate).getTime()) / 1000);
-  if (secs < 60)  return { label: `${secs}s ago`,           cls: "age-fresh" };
-  if (secs < 180) return { label: `${Math.floor(secs/60)}m ago`, cls: "age-fresh" };
-  if (secs < 300) return { label: `${Math.floor(secs/60)}m ago`, cls: "age-aging" };
-  return { label: `${Math.floor(secs/60)}m ago`, cls: "age-stale" };
+  if (secs < 60)  return { label: `${secs}s ago`,               cls: "age-fresh" };
+  if (secs < 180) return { label: `${Math.floor(secs / 60)}m ago`, cls: "age-fresh" };
+  if (secs < 300) return { label: `${Math.floor(secs / 60)}m ago`, cls: "age-aging" };
+  return           { label: `${Math.floor(secs / 60)}m ago`,     cls: "age-stale" };
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ function TierBadge({ tier }: { tier: Tier }) {
 
 function StructureBadge({ event }: { event: string }) {
   if (!event || event === "NONE") return null;
-  const isChoCH = event.startsWith("CHOCH");
+  const isChoCH   = event.startsWith("CHOCH");
   const isBullish = event.endsWith("BULLISH");
   if (!isBullish) return null; // only surface bullish events in a long-bias scanner
   return (
@@ -99,7 +99,10 @@ function RRBar({ rr }: { rr: number }) {
   const pct   = Math.min((rr / 4) * 100, 100);
   const color = rr >= 3 ? "var(--bull)" : rr >= 2 ? "var(--accent)" : "var(--warn)";
   return (
-    <div className="mt-1.5 h-1 rounded-pill overflow-hidden" style={{ background: "rgba(255,255,255,0.08)" }}>
+    <div
+      className="mt-1.5 h-1 rounded-pill overflow-hidden"
+      style={{ background: "rgba(255,255,255,0.08)" }}
+    >
       <div
         className="h-full rounded-pill"
         style={{ width: `${pct}%`, background: color, transition: "width 0.5s ease-out" }}
@@ -123,20 +126,17 @@ function SkeletonCard() {
 }
 
 function StatsBar({ data }: { data: ScanResponse }) {
-  const tiers = data.results.filter((r) => r.tier !== "NONE");
-  const s = tiers.filter((r) => r.tier === "S").length;
-  const a = tiers.filter((r) => r.tier === "A").length;
-  const b = tiers.filter((r) => r.tier === "B").length;
-
+  const active = data.results.filter((r) => r.tier !== "NONE");
+  const s = active.filter((r) => r.tier === "S").length;
+  const a = active.filter((r) => r.tier === "A").length;
+  const b = active.filter((r) => r.tier === "B").length;
   return (
     <div
       className="mx-5 mb-3 px-4 py-2.5 glass rounded-lg flex items-center gap-4 text-[11px]"
       style={{ borderRadius: "var(--radius-md)" }}
     >
-      <span style={{ color: "var(--text-tertiary)" }}>
-        {data.symbolCount} scanned
-      </span>
-      <span className="mx-1" style={{ color: "var(--divider)" }}>|</span>
+      <span style={{ color: "var(--text-tertiary)" }}>{data.symbolCount} scanned</span>
+      <span style={{ color: "var(--divider)" }}>|</span>
       {s > 0 && <span style={{ color: "var(--tier-s)" }}><b>{s}</b> S</span>}
       {a > 0 && <span style={{ color: "var(--tier-a)" }}><b>{a}</b> A</span>}
       {b > 0 && <span style={{ color: "var(--tier-b)" }}><b>{b}</b> B</span>}
@@ -147,7 +147,13 @@ function StatsBar({ data }: { data: ScanResponse }) {
   );
 }
 
-function FilterBar({ active, setActive }: { active: FilterTier; setActive: (t: FilterTier) => void }) {
+function FilterBar({
+  active,
+  setActive
+}: {
+  active: FilterTier;
+  setActive: (t: FilterTier) => void;
+}) {
   const tiers: FilterTier[] = ["ALL", "S", "A", "B"];
   return (
     <div className="flex gap-2 px-5 mb-3 overflow-x-auto">
@@ -157,10 +163,11 @@ function FilterBar({ active, setActive }: { active: FilterTier; setActive: (t: F
           onClick={() => setActive(t)}
           className="text-[12px] font-semibold px-3.5 py-1 rounded-pill flex-shrink-0"
           style={{
-            background: active === t ? "rgba(58,123,255,0.25)" : "rgba(255,255,255,0.05)",
-            border: active === t ? "1px solid rgba(58,123,255,0.5)" : "1px solid rgba(255,255,255,0.1)",
-            color: active === t ? "#fff" : "var(--text-tertiary)",
-            transition: "all var(--transition-fast)"
+            background:   active === t ? "rgba(58,123,255,0.25)" : "rgba(255,255,255,0.05)",
+            border:       active === t ? "1px solid rgba(58,123,255,0.5)" : "1px solid rgba(255,255,255,0.1)",
+            color:        active === t ? "#fff" : "var(--text-tertiary)",
+            transition:   "all var(--transition-fast)",
+            cursor:       "pointer"
           }}
         >
           {t === "ALL" ? "All" : `Tier ${t}`}
@@ -170,30 +177,53 @@ function FilterBar({ active, setActive }: { active: FilterTier; setActive: (t: F
   );
 }
 
-function ScanAgeDisplay({ scannedAt, nextScanIn }: { scannedAt: string; nextScanIn: number }) {
+function ScanAgeDisplay({
+  scannedAt,
+  nextScanIn
+}: {
+  scannedAt: string;
+  nextScanIn: number;
+}) {
+  // Re-render every 10 s so the "X ago" label stays fresh
   const [, tick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => tick((n) => n + 1), 10000);
+    const id = setInterval(() => tick((n) => n + 1), 10_000);
     return () => clearInterval(id);
   }, []);
 
   const { label, cls } = fmtAge(scannedAt);
-  const pct = Math.max(0, Math.min(100, ((AUTO_REFRESH_MS - nextScanIn) / AUTO_REFRESH_MS) * 100));
+  const pct = Math.max(
+    0,
+    Math.min(100, ((AUTO_REFRESH_MS - nextScanIn) / AUTO_REFRESH_MS) * 100)
+  );
 
   return (
     <div className="px-5 mb-3">
-      <div className="flex items-center justify-between mb-1.5 text-[11px]" style={{ color: "var(--text-tertiary)" }}>
-        <span>Last scan <span className={cls}>{label}</span></span>
+      <div
+        className="flex items-center justify-between mb-1.5 text-[11px]"
+        style={{ color: "var(--text-tertiary)" }}
+      >
+        <span>
+          Last scan <span className={cls}>{label}</span>
+        </span>
         <span>Auto-refresh in {Math.ceil(nextScanIn / 1000)}s</span>
       </div>
-      <div className="h-px w-full" style={{ background: "rgba(255,255,255,0.06)", borderRadius: "var(--radius-pill)" }}>
+      <div
+        style={{
+          height: "2px",
+          width: "100%",
+          background: "rgba(255,255,255,0.06)",
+          borderRadius: "var(--radius-pill)",
+          overflow: "hidden"
+        }}
+      >
         <div className="refresh-bar" style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
 }
 
-function ResultCard({ r, index }: { r: ScanResult; index: number }) {
+function ResultCard({ r, index: _index }: { r: ScanResult; index: number }) {
   const [expanded, setExpanded] = useState(false);
   if (r.tier === "NONE") return null;
 
@@ -206,6 +236,10 @@ function ResultCard({ r, index }: { r: ScanResult; index: number }) {
       className="glass card-interactive anim-fade-up overflow-hidden"
       style={{ borderRadius: "var(--radius-md)", boxShadow: TIER_GLOW[r.tier] }}
       onClick={() => setExpanded((e) => !e)}
+      role="button"
+      aria-expanded={expanded}
+      tabIndex={0}
+      onKeyDown={(e) => e.key === "Enter" && setExpanded((v) => !v)}
     >
       {/* ── Header row ─────────────────────────────────────────── */}
       <div className="flex items-start justify-between px-4 pt-4 pb-2">
@@ -258,7 +292,10 @@ function ResultCard({ r, index }: { r: ScanResult; index: number }) {
 
       {/* ── R:R bar ────────────────────────────────────────────── */}
       <div className="px-4 pb-3">
-        <div className="flex justify-between text-[10px] mb-0.5" style={{ color: "var(--text-tertiary)" }}>
+        <div
+          className="flex justify-between text-[10px] mb-0.5"
+          style={{ color: "var(--text-tertiary)" }}
+        >
           <span>R:R TP1 {r.riskRewardT1.toFixed(1)}x</span>
           <span>TP2 {r.riskRewardT2.toFixed(1)}x</span>
         </div>
@@ -270,23 +307,21 @@ function ResultCard({ r, index }: { r: ScanResult; index: number }) {
         <>
           <hr className="divider mx-4" />
           <div className="px-4 py-3">
-
-            {/* Signal chips */}
             <SignalChips flags={r.flags} />
 
-            {/* Liquidity price if nearby */}
             {r.nearLiquidity && r.liquidityPrice !== null && (
               <div className="mt-2 text-[10px]" style={{ color: "var(--warn)" }}>
                 ⚡ Buy-side liquidity at ${fmt(r.liquidityPrice)} — potential sweep target
               </div>
             )}
 
-            {/* Reason string */}
-            <p className="mt-2.5 text-[11px] leading-relaxed" style={{ color: "var(--text-tertiary)" }}>
+            <p
+              className="mt-2.5 text-[11px] leading-relaxed"
+              style={{ color: "var(--text-tertiary)" }}
+            >
               {r.reason}
             </p>
 
-            {/* ATR info */}
             {r.atr !== null && (
               <p className="mt-1.5 text-[10px]" style={{ color: "var(--text-tertiary)" }}>
                 ATR(1h) {fmt(r.atr)} · SL {((r.price - r.stopLoss) / r.price * 100).toFixed(2)}% below entry
@@ -300,6 +335,7 @@ function ResultCard({ r, index }: { r: ScanResult; index: number }) {
       <div
         className="text-center pb-1.5 text-[10px]"
         style={{ color: "var(--text-tertiary)", opacity: 0.5 }}
+        aria-hidden="true"
       >
         {expanded ? "▲ less" : "▼ more"}
       </div>
@@ -316,26 +352,34 @@ export default function Home() {
   const [filter,  setFilter]  = useState<FilterTier>("ALL");
   const [nextIn,  setNextIn]  = useState(AUTO_REFRESH_MS);
 
-  const timerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Refs for timer handles so they survive re-renders without causing effect re-runs
+  const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Ref to always hold the *latest* runScan function — fixes the stale-closure
+  // problem where a scheduled auto-refresh calls the function captured at
+  // schedule time rather than the current one.
+  const runScanRef = useRef<(() => void) | null>(null);
+
   const clearTimers = useCallback(() => {
-    if (timerRef.current)    clearTimeout(timerRef.current);
-    if (countdownRef.current) clearInterval(countdownRef.current);
+    if (timerRef.current)     { clearTimeout(timerRef.current);   timerRef.current = null; }
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
   }, []);
 
-  const scheduleNext = useCallback((runScan: () => void) => {
+  const scheduleNext = useCallback(() => {
     clearTimers();
+    const startedAt = Date.now();
     setNextIn(AUTO_REFRESH_MS);
 
-    const startedAt = Date.now();
+    // Countdown display: tick every second
     countdownRef.current = setInterval(() => {
       const remaining = AUTO_REFRESH_MS - (Date.now() - startedAt);
       setNextIn(Math.max(0, remaining));
-    }, 1000);
+    }, 1_000);
 
+    // Auto-refresh: always calls the latest version of runScan via the ref
     timerRef.current = setTimeout(() => {
-      runScan();
+      runScanRef.current?.();
     }, AUTO_REFRESH_MS);
   }, [clearTimers]);
 
@@ -346,31 +390,31 @@ export default function Home() {
       const res = await fetch("/api/scan?limit=25");
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
+        throw new Error((body as { error?: string })?.error ?? `HTTP ${res.status}`);
       }
       const json: ScanResponse = await res.json();
       setData(json);
       setFilter("ALL");
-    } catch (e: any) {
-      setError(e?.message ?? "Scan failed — check connection");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Scan failed — check connection";
+      setError(msg);
     } finally {
       setLoading(false);
+      scheduleNext(); // schedule the next auto-refresh after every scan (success or failure)
     }
-  }, []);
+  }, [scheduleNext]);
 
-  // Wire up auto-refresh: each completed scan schedules the next one
-  const runScanWithSchedule = useCallback(async () => {
-    await runScan();
-    // scheduleNext captures the latest runScanWithSchedule via closure
-    scheduleNext(runScanWithSchedule);
-  }, [runScan, scheduleNext]);
-
-  // Auto-scan on mount
+  // Keep the ref current so the scheduled timeout always calls the latest runScan
   useEffect(() => {
-    runScanWithSchedule();
+    runScanRef.current = runScan;
+  }, [runScan]);
+
+  // Auto-scan on mount; clean up timers on unmount
+  useEffect(() => {
+    runScan();
     return clearTimers;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // intentionally empty — run once on mount only
 
   const visible = data?.results.filter((r) => {
     if (r.tier === "NONE") return false;
@@ -395,10 +439,10 @@ export default function Home() {
                 <span
                   className="ml-2 text-[11px] font-semibold px-2 py-0.5 rounded-pill"
                   style={{
-                    background: "rgba(58,123,255,0.18)",
-                    border: "1px solid rgba(58,123,255,0.3)",
-                    color: "var(--accent)",
-                    verticalAlign: "middle"
+                    background:     "rgba(58,123,255,0.18)",
+                    border:         "1px solid rgba(58,123,255,0.3)",
+                    color:          "var(--accent)",
+                    verticalAlign:  "middle"
                   }}
                 >
                   3.0
@@ -410,26 +454,29 @@ export default function Home() {
             </div>
 
             <button
-              onClick={runScanWithSchedule}
+              onClick={runScan}
               disabled={loading}
-              aria-label="Run scan"
+              aria-label={loading ? "Scanning…" : "Run scan"}
               className="flex items-center gap-2 px-4 py-2 text-[13px] font-semibold rounded-pill"
               style={{
-                background: loading
+                background:   loading
                   ? "rgba(58,123,255,0.15)"
                   : "linear-gradient(135deg, var(--accent), var(--midblue))",
-                border: "1px solid rgba(58,123,255,0.35)",
-                color: loading ? "rgba(255,255,255,0.5)" : "#fff",
-                boxShadow: loading ? "none" : "0 4px 20px rgba(58,123,255,0.3)",
-                transition: "all var(--transition-normal)",
-                cursor: loading ? "not-allowed" : "pointer"
+                border:       "1px solid rgba(58,123,255,0.35)",
+                color:        loading ? "rgba(255,255,255,0.5)" : "#fff",
+                boxShadow:    loading ? "none" : "0 4px 20px rgba(58,123,255,0.3)",
+                transition:   "all var(--transition-normal)",
+                cursor:       loading ? "not-allowed" : "pointer"
               }}
             >
               {loading ? (
                 <>
                   <span
                     className="anim-spin inline-block w-3 h-3 rounded-full"
-                    style={{ border: "2px solid rgba(255,255,255,0.15)", borderTopColor: "rgba(255,255,255,0.6)" }}
+                    style={{
+                      border:       "2px solid rgba(255,255,255,0.15)",
+                      borderTopColor: "rgba(255,255,255,0.6)"
+                    }}
                     aria-hidden="true"
                   />
                   Scanning…
@@ -451,10 +498,10 @@ export default function Home() {
           <div
             className="mx-5 mt-2 mb-3 px-4 py-3 text-[13px]"
             style={{
-              background: "rgba(255,75,110,0.1)",
-              border: "1px solid rgba(255,75,110,0.25)",
-              color: "var(--bear)",
-              borderRadius: "var(--radius-md)"
+              background:     "rgba(255,75,110,0.1)",
+              border:         "1px solid rgba(255,75,110,0.25)",
+              color:          "var(--bear)",
+              borderRadius:   "var(--radius-md)"
             }}
             role="alert"
           >
@@ -465,7 +512,9 @@ export default function Home() {
         {/* ── Loading skeletons ────────────────────────────────── */}
         {loading && (
           <div className="flex flex-col gap-3 px-5 mt-2">
-            {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
+            {Array.from({ length: 6 }).map((_, i) => (
+              <SkeletonCard key={i} />
+            ))}
           </div>
         )}
 
@@ -483,7 +532,9 @@ export default function Home() {
                 <div className="text-3xl mb-3">◎</div>
                 No {filter !== "ALL" ? `Tier ${filter}` : ""} signals this scan.
                 <div className="mt-1 text-[11px]">
-                  {filter !== "ALL" ? "Try 'All' to see lower-tier setups." : "Markets may be ranging — try again soon."}
+                  {filter !== "ALL"
+                    ? "Try 'All' to see lower-tier setups."
+                    : "Markets may be ranging — try again soon."}
                 </div>
               </div>
             ) : (
@@ -496,7 +547,7 @@ export default function Home() {
           </>
         )}
 
-        {/* ── Initial state (before first scan completes) ──────── */}
+        {/* ── Initial loading state (first scan not yet complete) ─ */}
         {!data && !loading && !error && (
           <div className="flex flex-col items-center justify-center mt-24 px-8 text-center">
             <div className="text-4xl mb-4 anim-pulse">◉</div>
