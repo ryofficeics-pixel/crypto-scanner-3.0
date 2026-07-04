@@ -43,16 +43,15 @@ const STABLES = new Set([
 ]);
 
 /**
- * Fetch the set of actively TRADING USDT spot symbols from exchangeInfo.
- * This is the authoritative source — the 24hr ticker endpoint returns data
- * for delisted/suspended symbols that no longer appear in the exchange UI
- * (e.g. FIROUSDT shows a price but is not tradeable). Cached in module scope
- * for the lifetime of the serverless function invocation (one scan = one call).
+ * Fetch the set of actively TRADING USDT spot symbols from Binance exchangeInfo.
+ * Authoritative source — the 24hr ticker returns data for delisted/suspended
+ * symbols (e.g. FIROUSDT shows a price but status is not TRADING).
+ * Cached for the lifetime of the serverless invocation.
  */
-let _tradingSymbolsCache: Set<string> | null = null;
+let _binanceTradingCache: Set<string> | null = null;
 
-async function getTradingSymbols(): Promise<Set<string>> {
-  if (_tradingSymbolsCache) return _tradingSymbolsCache;
+async function getBinanceTradingSymbols(): Promise<Set<string>> {
+  if (_binanceTradingCache) return _binanceTradingCache;
   const data = await safeFetchJson(`${BASE_URL}/api/v3/exchangeInfo`);
   const symbols = new Set<string>();
   for (const s of (data as any).symbols ?? []) {
@@ -60,24 +59,68 @@ async function getTradingSymbols(): Promise<Set<string>> {
       symbols.add(s.symbol as string);
     }
   }
-  _tradingSymbolsCache = symbols;
+  _binanceTradingCache = symbols;
   return symbols;
 }
 
 /**
- * Single call to /ticker/24hr, cleaned and typed, filtered to actively
- * trading symbols only. Every other selection function below filters/sorts
- * this same in-memory list — we never hit the ticker endpoint more than
- * once per scan.
+ * Fetch the set of actively tradable USDT pairs from GateIO.
+ * GateIO uses trade_status:"tradable" and symbol format "BASE_USDT".
+ * We normalise to Binance format ("BASEUSDT") for the intersection check.
+ * Fails silently — if GateIO is unreachable, returns an empty set so the
+ * Binance-only filter still applies and the scan doesn't break entirely.
+ * Cached for the lifetime of the serverless invocation.
+ */
+let _gateioTradingCache: Set<string> | null = null;
+
+async function getGateioTradingSymbols(): Promise<Set<string>> {
+  if (_gateioTradingCache) return _gateioTradingCache;
+  try {
+    const res = await fetch(
+      "https://api.gateio.ws/api/v4/spot/currency_pairs",
+      { next: { revalidate: 0 } }
+    );
+    if (!res.ok) throw new Error(`GateIO ${res.status}`);
+    const data: any[] = await res.json();
+    const symbols = new Set<string>();
+    for (const pair of data) {
+      // Only tradable pairs with USDT as quote asset
+      if (pair.trade_status === "tradable" && pair.quote === "USDT") {
+        // Convert "BASE_USDT" → "BASEUSDT" to match Binance format
+        symbols.add((pair.base as string) + "USDT");
+      }
+    }
+    _gateioTradingCache = symbols;
+    return symbols;
+  } catch {
+    // GateIO unreachable or changed — fail open so main scan still works.
+    // Log nothing; a consistently empty result will be obvious from scan output.
+    _gateioTradingCache = new Set();
+    return _gateioTradingCache;
+  }
+}
+
+/**
+ * Single call to /ticker/24hr, cleaned and typed, filtered to symbols that
+ * are actively trading on BOTH Binance AND GateIO. This eliminates delisted
+ * or exchange-only coins that aren't actionable for a trader using both.
+ * If GateIO fetch fails, falls back to Binance-only filter.
  */
 async function getAllUsdtPairs(): Promise<Ticker24hr[]> {
-  const [data, tradingSymbols] = await Promise.all([
+  const [data, binanceSymbols, gateioSymbols] = await Promise.all([
     safeFetchJson(`${BASE_URL}/api/v3/ticker/24hr`),
-    getTradingSymbols()
+    getBinanceTradingSymbols(),
+    getGateioTradingSymbols()
   ]);
+
+  // If GateIO returned nothing (failed/empty), skip the intersection so
+  // we still get results rather than an empty scan.
+  const useGateioFilter = gateioSymbols.size > 0;
+
   return (data as Record<string, unknown>[])
     .filter((t) => typeof t.symbol === "string" && (t.symbol as string).endsWith("USDT"))
-    .filter((t) => tradingSymbols.has(t.symbol as string))  // only actively trading pairs
+    .filter((t) => binanceSymbols.has(t.symbol as string))          // Binance TRADING only
+    .filter((t) => !useGateioFilter || gateioSymbols.has(t.symbol as string)) // GateIO tradable
     .filter((t) => !/(UP|DOWN|BULL|BEAR)USDT$/.test(t.symbol as string))
     .filter((t) => !STABLES.has(t.symbol as string))
     .map((t) => ({
