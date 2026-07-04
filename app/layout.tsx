@@ -3,10 +3,22 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Crypto Scanner 3.0",
-  description: "Live Binance multi-timeframe scanner — buy on weakness detector",
+  description: "Live Binance multi-timeframe scanner — SMC + HTF signals",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "CryptoScan"
+  },
+  icons: {
+    icon: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" }
+    ],
+    apple: [{ url: "/icon-192.png", sizes: "192x192" }]
+  }
 };
 
-// viewport must be a separate export in Next.js 14+ (not inside metadata)
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,

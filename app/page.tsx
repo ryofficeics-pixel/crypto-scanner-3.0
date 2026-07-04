@@ -9,7 +9,14 @@ interface ScanResponse {
   results: ScanResult[];
 }
 
-type FilterTier = "ALL" | "S" | "A" | "B";
+interface ListingAnnouncement {
+  symbol: string;
+  title: string;
+  publishDate: number;
+  ageHours: number;
+}
+
+type FilterTier = "ALL" | "S" | "A" | "B" | "NEW";
 
 const AUTO_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -51,6 +58,12 @@ function fmtAge(isoDate: string): { label: string; cls: string } {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+function fmtListingAge(hours: number): string {
+  if (hours < 1) return `${Math.round(hours * 60)}m`;
+  if (hours < 24) return `${hours.toFixed(1)}h`;
+  return `${(hours / 24).toFixed(1)}d`;
+}
 
 function TierBadge({ tier }: { tier: Tier }) {
   return (
@@ -125,11 +138,60 @@ function SkeletonCard() {
   );
 }
 
+function fmtAnnouncementAge(hours: number): string {
+  if (hours < 1) return `${Math.round(hours * 60)}m ago`;
+  if (hours < 24) return `${hours.toFixed(1)}h ago`;
+  return `${(hours / 24).toFixed(1)}d ago`;
+}
+
+/**
+ * Pre-price heads-up list: coins Binance has ANNOUNCED it will list, before
+ * they necessarily have any price/candle history yet. This is the earliest
+ * possible signal the scanner can surface — separate from and ahead of the
+ * candle-based "NEW" badge on scan cards, which only fires once the coin is
+ * actually trading. Best-effort / unofficial data source (see
+ * lib/announcements.ts) — renders nothing if empty rather than erroring.
+ */
+function AnnouncementsPanel({ items }: { items: ListingAnnouncement[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="mx-5 mb-3">
+      <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: "var(--text-tertiary)" }}>
+        📢 RECENTLY ANNOUNCED — before price history exists
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {items.slice(0, 5).map((a) => (
+          <div
+            key={a.symbol}
+            className="glass px-3 py-2 flex items-center justify-between gap-2"
+            style={{ borderRadius: "var(--radius-md)" }}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-[13px]">{a.symbol}</span>
+                <span className="new-pill">{fmtAnnouncementAge(a.ageHours)}</span>
+              </div>
+              <div
+                className="text-[11px] mt-0.5 truncate"
+                style={{ color: "var(--text-tertiary)" }}
+                title={a.title}
+              >
+                {a.title}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function StatsBar({ data }: { data: ScanResponse }) {
-  const active = data.results.filter((r) => r.tier !== "NONE");
+  const active = data.results.filter((r) => r.tier !== "NONE" || r.isNewListing);
   const s = active.filter((r) => r.tier === "S").length;
   const a = active.filter((r) => r.tier === "A").length;
   const b = active.filter((r) => r.tier === "B").length;
+  const n = active.filter((r) => r.isNewListing).length;
   return (
     <div
       className="mx-5 mb-3 px-4 py-2.5 glass rounded-lg flex items-center gap-4 text-[11px]"
@@ -140,7 +202,8 @@ function StatsBar({ data }: { data: ScanResponse }) {
       {s > 0 && <span style={{ color: "var(--tier-s)" }}><b>{s}</b> S</span>}
       {a > 0 && <span style={{ color: "var(--tier-a)" }}><b>{a}</b> A</span>}
       {b > 0 && <span style={{ color: "var(--tier-b)" }}><b>{b}</b> B</span>}
-      {s === 0 && a === 0 && b === 0 && (
+      {n > 0 && <span style={{ color: "var(--bull)" }}><b>{n}</b> New</span>}
+      {s === 0 && a === 0 && b === 0 && n === 0 && (
         <span style={{ color: "var(--text-tertiary)" }}>No signals</span>
       )}
     </div>
@@ -154,7 +217,7 @@ function FilterBar({
   active: FilterTier;
   setActive: (t: FilterTier) => void;
 }) {
-  const tiers: FilterTier[] = ["ALL", "S", "A", "B"];
+  const tiers: FilterTier[] = ["ALL", "S", "A", "B", "NEW"];
   return (
     <div className="flex gap-2 px-5 mb-3 overflow-x-auto">
       {tiers.map((t) => (
@@ -170,7 +233,7 @@ function FilterBar({
             cursor:       "pointer"
           }}
         >
-          {t === "ALL" ? "All" : `Tier ${t}`}
+          {t === "ALL" ? "All" : t === "NEW" ? "New" : `Tier ${t}`}
         </button>
       ))}
     </div>
@@ -225,7 +288,12 @@ function ScanAgeDisplay({
 
 function ResultCard({ r, index: _index }: { r: ScanResult; index: number }) {
   const [expanded, setExpanded] = useState(false);
-  if (r.tier === "NONE") return null;
+  // A brand-new listing rarely has enough candle history for indicators to
+  // converge (EMA200 alone needs ~200 candles) or for structure/pattern
+  // detection to fire, so it will almost always score tier NONE. Hiding
+  // NONE unconditionally would silently swallow the exact coins this
+  // feature exists to surface — so we keep it visible when it's new.
+  if (r.tier === "NONE" && !r.isNewListing) return null;
 
   const pctColor  = r.priceChangePercent >= 0 ? "var(--bull)" : "var(--bear)";
   const trendCls  = r.trend4h === "up" ? "trend-up" : r.trend4h === "down" ? "trend-down" : "trend-ranging";
@@ -251,6 +319,20 @@ function ResultCard({ r, index: _index }: { r: ScanResult; index: number }) {
               <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>/USDT</span>
               <StructureBadge event={r.structureEvent} />
               {r.nearLiquidity && <span className="liq-pill">LIQ</span>}
+              {r.possibleExitLiquidity ? (
+                <span
+                  className="warn-pill"
+                  title={`Pumped then retraced ${r.drawdownFromAthPct?.toFixed(1)}% off its listing ATH — possible exit-liquidity pattern`}
+                >
+                  ⚠ EXIT LIQ
+                </span>
+              ) : (
+                r.isNewListing && r.listingAgeHours !== null && (
+                  <span className="new-pill" title="First candle detected less than 48h ago">
+                    NEW · {fmtListingAge(r.listingAgeHours)}
+                  </span>
+                )
+              )}
             </div>
             <div className="text-[11px] mt-0.5" style={{ color: "var(--text-tertiary)" }}>
               <span className={trendCls}>{trendIcon} 4h {r.trend4h}</span>
@@ -352,6 +434,12 @@ export default function Home() {
   const [filter,  setFilter]  = useState<FilterTier>("ALL");
   const [nextIn,  setNextIn]  = useState(AUTO_REFRESH_MS);
 
+  // Deliberately separate from `data`/`error` above: this comes from an
+  // unofficial, best-effort endpoint (see lib/announcements.ts). If it
+  // fails, it silently stays empty — it must never surface as a scan error
+  // or block the main scanner from working.
+  const [announcements, setAnnouncements] = useState<ListingAnnouncement[]>([]);
+
   // Refs for timer handles so they survive re-renders without causing effect re-runs
   const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -387,7 +475,10 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/scan?limit=25");
+      // limit = how many "big mover" slots to scan (mid/low-cap, big % moves),
+      // on top of a fixed 12 liquidity-leader slots (BTC/ETH/majors for context).
+      // minMove = ignore moves smaller than this % (default 15, so 30/60/80% moves are covered).
+      const res = await fetch("/api/scan?limit=35&minMove=15");
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string })?.error ?? `HTTP ${res.status}`);
@@ -409,6 +500,27 @@ export default function Home() {
     runScanRef.current = runScan;
   }, [runScan]);
 
+  // Announcements: intentionally its own effect/interval, decoupled from
+  // runScan's lifecycle. Errors are swallowed here (not surfaced via the
+  // main `error` state) — this is a bonus signal from an unofficial
+  // endpoint, not a dependency the rest of the UI should react to.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/announcements");
+        if (!res.ok) return;
+        const json: { announcements: ListingAnnouncement[] } = await res.json();
+        if (!cancelled) setAnnouncements(json.announcements ?? []);
+      } catch {
+        // best-effort — leave whatever we last had (or empty) untouched
+      }
+    };
+    load();
+    const id = setInterval(load, AUTO_REFRESH_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   // Auto-scan on mount; clean up timers on unmount
   useEffect(() => {
     runScan();
@@ -417,7 +529,8 @@ export default function Home() {
   }, []); // intentionally empty — run once on mount only
 
   const visible = data?.results.filter((r) => {
-    if (r.tier === "NONE") return false;
+    if (filter === "NEW") return r.isNewListing;
+    if (r.tier === "NONE" && !r.isNewListing) return false;
     if (filter === "ALL")  return true;
     return r.tier === filter;
   }) ?? [];
@@ -517,6 +630,8 @@ export default function Home() {
             ))}
           </div>
         )}
+
+        <AnnouncementsPanel items={announcements} />
 
         {/* ── Results ─────────────────────────────────────────── */}
         {data && !loading && (

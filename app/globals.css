@@ -133,6 +133,28 @@ body {
   font-weight: 600;
 }
 
+/* ── New-listing pill (< 48h since first candle) ───────────── */
+.new-pill {
+  background: rgba(0,212,160,0.10);
+  color: var(--bull);
+  border: 1px solid rgba(0,212,160,0.25);
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+}
+
+/* ── Exit-liquidity warning pill ───────────────────────────── */
+.warn-pill {
+  background: rgba(255,75,110,0.12);
+  color: var(--bear);
+  border: 1px solid rgba(255,75,110,0.3);
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  font-weight: 700;
+}
+
 /* ── Trend colours ──────────────────────────────────────────── */
 .trend-up      { color: var(--bull); }
 .trend-down    { color: var(--bear); }

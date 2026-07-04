@@ -12,10 +12,90 @@
 //   - Tier S threshold: ≥5 signals, ≥3 strong (raised from ≥2 due to expanded signal set)
 
 import type { Candle } from "./binance";
+import { KLINES_LIMIT } from "./binance";
 import { computeIndicators, IndicatorSnapshot } from "./indicators";
 import { computeZigZag, detectStructure, Pivot } from "./zigzag";
 import { findOrderBlocks, findFairValueGaps, findLiquidityZones, LiquidityZone } from "./smc";
 import { detectPattern } from "./patterns";
+
+/**
+ * Listing-age heuristic — zero extra API calls.
+ *
+ * Binance's spot exchangeInfo has no listing-date field (onboardDate only
+ * exists on the Futures API), so there's no direct way to ask "when was
+ * this listed". Instead: klines always return as many candles as actually
+ * exist, up to the requested `limit`. If the returned array is SHORTER
+ * than KLINES_LIMIT, that array's first candle IS the symbol's genesis
+ * candle at that interval — we can read its openTime directly.
+ *
+ * Checks finest-to-coarsest interval so the age estimate is as precise as
+ * possible: 15m (up to ~2.6 days), then 1h (~10.4 days), then 4h (~41.7
+ * days). Beyond that we can't tell from this data — treated as "not new".
+ */
+function estimateListingAgeHours(
+  m15: Candle[], h1: Candle[], h4: Candle[]
+): number | null {
+  const now = Date.now();
+  if (m15.length < KLINES_LIMIT && m15.length > 0) {
+    return (now - m15[0].openTime) / 3_600_000;
+  }
+  if (h1.length < KLINES_LIMIT && h1.length > 0) {
+    return (now - h1[0].openTime) / 3_600_000;
+  }
+  if (h4.length < KLINES_LIMIT && h4.length > 0) {
+    return (now - h4[0].openTime) / 3_600_000;
+  }
+  return null; // has full history at every interval we checked — not "new"
+}
+
+// Matches the user's own stated pattern: the big move usually happens in
+// the first 1-2 days after listing. 48h is the flagging threshold.
+const NEW_LISTING_THRESHOLD_HOURS = 48;
+
+/**
+ * "Exit liquidity" pattern detection for fresh listings.
+ *
+ * Common pattern: a coin builds hype on a smaller exchange / social media,
+ * gets listed on Binance, retail piles in on the listing, price spikes —
+ * then dumps hard as early holders sell into that new liquidity. This is
+ * fundamentally different from "still climbing" new-listing momentum, and
+ * showing it as a normal bullish tier would be actively misleading.
+ *
+ * Uses the SAME candle array that estimateListingAgeHours already
+ * identified as the symbol's full trading history (no extra API calls):
+ * if price already pumped a meaningful amount off its earliest close
+ * (confirms a real pump happened) AND has since retraced hard from its
+ * high-since-listing, flag it. This is a shape-based heuristic on data we
+ * already have — not a guarantee, just a risk flag.
+ */
+function detectExitLiquidityPattern(
+  isNewListing: boolean,
+  m15: Candle[], h1: Candle[], h4: Candle[]
+): { possibleExitLiquidity: boolean; athSinceListing: number | null; drawdownFromAthPct: number | null } {
+  const none = { possibleExitLiquidity: false, athSinceListing: null, drawdownFromAthPct: null };
+  if (!isNewListing) return none;
+
+  let windowCandles: Candle[] | null = null;
+  if (m15.length < KLINES_LIMIT && m15.length > 0) windowCandles = m15;
+  else if (h1.length < KLINES_LIMIT && h1.length > 0) windowCandles = h1;
+  else if (h4.length < KLINES_LIMIT && h4.length > 0) windowCandles = h4;
+  if (!windowCandles || windowCandles.length < 3) return none;
+
+  const athSinceListing = Math.max(...windowCandles.map((c) => c.high));
+  const currentPrice = windowCandles[windowCandles.length - 1].close;
+  const firstClose = windowCandles[0].close;
+
+  const pumpedPct = firstClose > 0 ? ((athSinceListing - firstClose) / firstClose) * 100 : 0;
+  const drawdownFromAthPct = athSinceListing > 0 ? ((currentPrice - athSinceListing) / athSinceListing) * 100 : 0;
+
+  const MIN_PUMP_TO_QUALIFY_PCT       = 20;  // it needs to have actually pumped first
+  const EXIT_LIQUIDITY_DRAWDOWN_PCT   = -15; // ...then given back at least this much
+
+  const possibleExitLiquidity =
+    pumpedPct >= MIN_PUMP_TO_QUALIFY_PCT && drawdownFromAthPct <= EXIT_LIQUIDITY_DRAWDOWN_PCT;
+
+  return { possibleExitLiquidity, athSinceListing, drawdownFromAthPct };
+}
 
 export type Tier = "S" | "A" | "B" | "NONE";
 
@@ -46,6 +126,11 @@ export interface ScanResult {
   quoteVolume: number;
   nearLiquidity: boolean;
   liquidityPrice: number | null;
+  isNewListing: boolean;
+  listingAgeHours: number | null;
+  possibleExitLiquidity: boolean;
+  athSinceListing: number | null;
+  drawdownFromAthPct: number | null;
 }
 
 /** Only push a flag if it carries a signal (weak or strong). Suppresses noisy "none" entries. */
@@ -261,6 +346,11 @@ export function scanSymbol(
   const { m15, h1, h4 } = candles;
   if (!m15.length || !h1.length || !h4.length) return null;
 
+  const listingAgeHours = estimateListingAgeHours(m15, h1, h4);
+  const isNewListing = listingAgeHours !== null && listingAgeHours <= NEW_LISTING_THRESHOLD_HOURS;
+  const { possibleExitLiquidity, athSinceListing, drawdownFromAthPct } =
+    detectExitLiquidityPattern(isNewListing, m15, h1, h4);
+
   const price = h1[h1.length - 1].close;
   if (!Number.isFinite(price) || price <= 0) return null;
 
@@ -338,6 +428,14 @@ export function scanSymbol(
   // Enforce minimum 1:2 R:R at TP1 (now always met: 2.0 ATR / 1.0 ATR = 2.0)
   if (riskRewardT1 < 2 && tier !== "NONE") tier = "NONE";
 
+  // Veto: a fresh listing that already pumped and is now dumping hard from
+  // its own ATH is a classic "hype -> Binance listing -> exit liquidity"
+  // pattern. Showing this as a bullish S/A/B tier would be actively
+  // misleading regardless of what the indicators say — those signals were
+  // likely generated ON the way up and are now stale/wrong. Force NONE so
+  // it only ever surfaces via the NEW/warning badge, never as a buy tier.
+  if (possibleExitLiquidity) tier = "NONE";
+
   // Nearest buy-side liquidity below price (for UI display)
   const nearestBuySide = zones1h
     .filter((z) => z.type === "buy_side" && z.price < price)
@@ -348,7 +446,9 @@ export function scanSymbol(
     .map((f) => f.label);
 
   const reason =
-    activeReasons.length > 0
+    possibleExitLiquidity
+      ? `⚠ Possible exit liquidity — pumped then ${drawdownFromAthPct?.toFixed(1)}% off ATH within ${listingAgeHours?.toFixed(1)}h of listing`
+      : activeReasons.length > 0
       ? `${activeReasons.join(" + ")} — 4h: ${structure4h.trend}${
           structure4h.event !== "NONE" ? ` (${structure4h.event})` : ""
         }`
@@ -373,6 +473,11 @@ export function scanSymbol(
     priceChangePercent: meta.priceChangePercent,
     quoteVolume: meta.quoteVolume,
     nearLiquidity: !!nearestBuySide,
-    liquidityPrice: nearestBuySide?.price ?? null
+    liquidityPrice: nearestBuySide?.price ?? null,
+    isNewListing,
+    listingAgeHours,
+    possibleExitLiquidity,
+    athSinceListing,
+    drawdownFromAthPct
   };
 }

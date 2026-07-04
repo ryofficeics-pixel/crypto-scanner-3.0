@@ -1,31 +1,59 @@
 // app/api/scan/route.ts
-// On-demand scan endpoint. Called on page load. Fetches top USDT pairs,
-// pulls multi-timeframe klines for each, computes all indicators + SMC +
+// On-demand scan endpoint. Called on page load. Fetches a BLENDED symbol
+// universe (liquidity leaders + big % movers, see lib/binance.ts), pulls
+// multi-timeframe klines for each, computes all indicators + SMC +
 // patterns, returns ranked results. No caching — always live data.
+//
+// v3.1: fixed "same coins every time" — old code only ever scanned the
+// top-25-by-volume pairs, which structurally excludes mid/low-cap coins
+// making 30-80% moves (those never crack top-25 by raw volume). Now uses
+// getScanCandidates() which unions volume leaders with high % movers.
 
 import { NextResponse } from "next/server";
-import { getTopUsdtPairsByVolume, getMultiTimeframeKlines } from "@/lib/binance";
+import { getScanCandidates, getMultiTimeframeKlines } from "@/lib/binance";
 import { scanSymbol } from "@/lib/scoring";
 
 export const runtime = "nodejs"; // edge runtime can't use technicalindicators (node APIs)
 export const dynamic = "force-dynamic";
-export const maxDuration = 60; // Vercel Pro allows 60s; free tier is 10s (may timeout on 25 symbols)
+// NOTE: on Vercel's free (Hobby) plan, function duration is hard-capped at
+// 10s regardless of this value — it only takes effect on Pro (60s) or
+// higher. Since this project is meant to stay free, tune BATCH/DELAY below
+// as if the real ceiling is ~10s, not 60s.
+export const maxDuration = 60;
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const limitParam = parseInt(url.searchParams.get("limit") ?? "20");
-  const limit = Math.min(Math.max(limitParam, 5), 30);
+  // "limit" now controls how many big-movers slots we scan (on top of a
+  // fixed set of liquidity leaders) rather than the whole universe size.
+  // Guard against NaN from malformed query params (e.g. ?limit=abc) — an
+  // un-guarded NaN would flow into Math.min/Math.max/slice() and silently
+  // zero out the entire big-movers bucket with no error thrown.
+  const limitParamRaw = parseInt(url.searchParams.get("limit") ?? "35");
+  const limitParam = Number.isFinite(limitParamRaw) ? limitParamRaw : 35;
+  const moverSlots = Math.min(Math.max(limitParam, 10), 45); // hard cap: stay inside free-tier 10s budget
+
+  const minMovePctRaw = parseFloat(url.searchParams.get("minMove") ?? "15");
+  const minMovePct = Number.isFinite(minMovePctRaw) ? minMovePctRaw : 15;
 
   try {
-    const tickers = await getTopUsdtPairsByVolume(limit);
+    const tickers = await getScanCandidates({
+      volumeSlots: 12,          // BTC/ETH/majors — context, rarely tier S/A on their own
+      moverSlots,                // mid/low-cap coins with big 24h moves — the point of this fix
+      minMovePct,                 // ignore <15% noise by default; raise via ?minMove=30 for only 30%+ etc.
+      minMoverVolume: 300_000    // USDT 24h floor — filters out illiquid/manipulated micro-caps
+    });
+
     if (!tickers.length) {
       return NextResponse.json({ error: "No USDT pairs returned from Binance" }, { status: 502 });
     }
 
-    // Fetch klines concurrently with a concurrency cap to avoid rate-limiting
-    // Binance public API limit: 6000 weight/min. Each getMultiTimeframeKlines
-    // costs 3 requests × ~2 weight = ~6 weight. 25 symbols = ~150 weight total.
-    const BATCH = 5;
+    // Fetch klines concurrently with a concurrency cap to avoid rate-limiting.
+    // Binance weight budget is 6000/min — even 50 symbols (~300 weight) is
+    // nowhere near that limit, so the real constraint is wall-clock time on
+    // the free tier, not API weight. Larger batches + shorter delay than
+    // before to fit more symbols inside the ~10s window.
+    const BATCH = 8;
+    const INTER_BATCH_DELAY_MS = 150;
     const results = [];
 
     for (let i = 0; i < tickers.length; i += BATCH) {
@@ -46,23 +74,28 @@ export async function GET(req: Request) {
         }
       }
 
-      // Polite delay between batches — avoid burst rate limiting
       if (i + BATCH < tickers.length) {
-        await new Promise((res) => setTimeout(res, 300));
+        await new Promise((res) => setTimeout(res, INTER_BATCH_DELAY_MS));
       }
     }
 
-    // Sort: S first, then A, then B, then NONE; within tier sort by signalCount desc
+    // Sort: S first, then A, then B, then NONE — but a fresh listing jumps
+    // ahead of same-tier peers since catching it early (within the 1-2 day
+    // window) is the whole point of this feature.
     const tierOrder: Record<string, number> = { S: 0, A: 1, B: 2, NONE: 3 };
     results.sort((a, b) => {
       const td = tierOrder[a.tier] - tierOrder[b.tier];
       if (td !== 0) return td;
+      if (a.isNewListing !== b.isNewListing) return a.isNewListing ? -1 : 1;
+      const moveDiff = Math.abs(b.priceChangePercent) - Math.abs(a.priceChangePercent);
+      if (moveDiff !== 0) return moveDiff;
       return b.signalCount - a.signalCount;
     });
 
     return NextResponse.json({
       scannedAt: new Date().toISOString(),
       symbolCount: results.length,
+      candidateCount: tickers.length,
       results
     });
   } catch (err: any) {
