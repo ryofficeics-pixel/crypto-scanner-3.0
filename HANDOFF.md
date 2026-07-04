@@ -1,17 +1,16 @@
-# Crypto Scanner 3.0 — Handoff Doc
-**Stack:** Next.js 14 / TypeScript / Vercel  
+# Crypto Scanner — Handoff Doc
+**Stack:** Next.js 14.2.35 / TypeScript / Vercel  
 **Data source:** Binance public REST API (no API key needed)  
-**Last verified:** v3.0 — TypeScript clean compile ✓
+**Last commit:** `524dc5a` — filter scan candidates to coins tradable on both Binance and GateIO  
+**Last updated:** 2026-07-04
 
 ---
 
 ## 1. What this is
 
-A mobile-first web dashboard that scans Binance's top 25 USDT pairs on demand.
-Every tap of **Scan** (or auto-refresh every 5 minutes) fetches live OHLCV data
-across 3 timeframes (15m / 1h / 4h), computes 14 signals spanning indicators,
-Smart Money Concepts on both 1h and 4h, Heikin-Ashi trend, and 7 chart pattern
-types — then ranks results into Tier S / A / B with ATR-based TP1/TP2/SL.
+A mobile-first web dashboard that scans a blended universe of Binance USDT spot pairs on demand. Every tap of **Scan** (or auto-refresh every 5 minutes) fetches live OHLCV data across 3 timeframes (15m / 1h / 4h), computes 14 signals spanning indicators, Smart Money Concepts on both 1h and 4h, Heikin-Ashi trend, and 7 chart pattern types — then ranks results into Tier S / A / B with ATR-based TP1/TP2/SL.
+
+Scan universe is a **blended** set: 12 volume leaders (majors) + up to 45 big % movers (≥15% 24h move, ≥$300k USDT volume), filtered to coins actively trading on **both Binance and GateIO**.
 
 No API key. No database. No WebSocket server. Opens in any mobile browser.
 
@@ -22,18 +21,21 @@ No API key. No database. No WebSocket server. Opens in any mobile browser.
 ```
 crypto-scanner/
 ├── app/
-│   ├── api/scan/route.ts   ← Scan endpoint (orchestrates everything)
-│   ├── globals.css         ← Design tokens + glassmorphism + all keyframes
-│   ├── layout.tsx          ← Root layout (viewport as separate export — Next.js 14 correct)
-│   └── page.tsx            ← Full dashboard UI (auto-scan, age bar, CHoCH badge, TP2 row)
+│   ├── api/
+│   │   ├── scan/route.ts           ← Main scan endpoint (orchestrates everything)
+│   │   └── announcements/route.ts  ← Pre-price listing radar (isolated, fail-silent)
+│   ├── globals.css                 ← Design tokens + glassmorphism + all keyframes
+│   ├── layout.tsx                  ← Root layout (viewport as separate export — Next.js 14 correct)
+│   └── page.tsx                    ← Full dashboard UI (auto-scan, age bar, CHoCH badge, TP2 row)
 ├── lib/
-│   ├── binance.ts          ← Binance public REST client
-│   ├── indicators.ts       ← RSI, EMA, MACD, BB, StochRSI, ATR + Heikin-Ashi trend
-│   ├── zigzag.ts           ← ZigZag pivot detection + BOS/CHoCH structure
-│   ├── smc.ts              ← Order blocks, FVG, liquidity zones
-│   ├── patterns.ts         ← Double top/bottom, H&S, Inv H&S, wedges, triangle (7 patterns)
-│   └── scoring.ts          ← 14-signal tier engine, ATR TP/SL, 4h SMC confluence
-├── vercel.json             ← maxDuration 60s for scan function
+│   ├── binance.ts       ← Binance public REST client + getScanCandidates (blended universe)
+│   ├── announcements.ts ← Binance listing announcement scraper (undocumented endpoint)
+│   ├── indicators.ts    ← RSI, EMA, MACD, BB, StochRSI, ATR + Heikin-Ashi trend
+│   ├── zigzag.ts        ← ZigZag pivot detection + BOS/CHoCH structure
+│   ├── smc.ts           ← Order blocks, FVG, liquidity zones
+│   ├── patterns.ts      ← Double top/bottom, H&S, Inv H&S, wedges, triangle (7 patterns)
+│   └── scoring.ts       ← 14-signal tier engine, ATR TP/SL, new listing + exit-liquidity detection
+├── vercel.json          ← maxDuration 60s for scan function
 ├── package.json
 ├── tsconfig.json
 └── HANDOFF.md
@@ -56,12 +58,12 @@ crypto-scanner/
 ```
 
 **Important:** Free Vercel plan caps serverless functions at **10 seconds**.
-Scanning 25 symbols takes ~15–25s depending on Binance latency.
+The blended scan (12 volume leaders + 35 movers) can approach this budget on slow Binance responses.
 
 Options:
-- **Upgrade to Vercel Pro** (60s limit, `vercel.json` already sets this)
-- **Or reduce scan limit** in `page.tsx` `/api/scan?limit=25` → `limit=10`
-  (10 symbols fits easily in the 10s free tier window)
+- **Upgrade to Vercel Pro** (60s limit, `vercel.json` already sets `maxDuration: 60`)
+- **Or reduce mover slots** via `?limit=15` — scans faster, fewer mid-cap coins covered
+- Hard cap in `route.ts` is `moverSlots = Math.min(Math.max(limit, 10), 45)` — never exceeds 45
 
 ---
 
@@ -212,25 +214,82 @@ CHoCH Bullish on 4h is now surfaced as a **strong** signal in the flag engine.
 ## 15. Binance rate limits
 
 Public REST API: 6,000 weight/minute.  
-Each klines request costs ~2 weight. 3 TFs × 25 symbols = 150 weight total.  
-Auto-refresh is every 5 minutes — well within limits.
+Each klines request costs ~2 weight. 3 TFs × up to 57 symbols (12 volume + 45 movers) = ~342 weight per scan.  
+Auto-refresh is every 5 minutes — well within limits.  
+`exchangeInfo` (for active-trading filter) costs 20 weight and is cached for the invocation lifetime.
 
 ---
 
-## 16. Known limitations
+## 16. Known limitations / open items
 
 1. **No persistence** — scan results are not stored. Each scan is fresh.
 2. **No push alerts** — app must be open in browser to receive results.
-3. **Vercel free tier timeout** — reduce `limit` to 10 if on free plan.
+3. **Vercel free tier timeout** — reduce `?limit=` to 15 or lower if hitting 10s wall.
 4. **EMA200 convergence** — needs 200+ candles; 250 fetched so fine for liquid pairs.
-5. **Pattern detection is pivot-based** — not image/ML-based. Works well on clean
-   swing structures; may miss patterns in choppy/low-liquidity candles.
-6. **Heikin-Ashi is a lagging filter** — it confirms trend, doesn't predict it.
-   Don't use HA alone as an entry trigger.
+5. **Pattern detection is pivot-based** — not image/ML-based. Works well on clean swing structures; may miss patterns in choppy/low-liquidity candles.
+6. **Heikin-Ashi is a lagging filter** — confirms trend, doesn't predict it. Don't use HA alone as an entry trigger.
+7. **Announcement radar uses an undocumented Binance endpoint** — has returned 403 before (confirmed Jan 2025). Fails silently, returns empty array. The main scan is completely unaffected if it goes dark.
+8. **GateIO filter fetches Gate.io's ticker list on every scan invocation** — if Gate.io is slow it eats into the 10s free-tier budget. Consider caching the Gate.io symbol set for the invocation lifetime, same pattern as `_binanceTradingCache` in `lib/binance.ts`.
+9. **Stale dev.log and crypto-scanner-3.0-changes/ in working tree** — untracked, not gitignored. Add to `.gitignore` if they shouldn't be committed. `public/` and `next-env.d.ts` are also untracked.
+10. **EADDRINUSE on port 3000** — a prior dev server was left running. Kill with `npx kill-port 3000` before starting a new session.
 
 ---
 
-## 17. Repo references
+## 17. Recent changes (post v3.0)
+
+| Commit | Change |
+|--------|--------|
+| `524dc5a` | Filter scan candidates to coins tradable on **both** Binance and GateIO — ensures every setup is executable on both exchanges |
+| `db27f4a` | v3.0 blended scan universe (`getScanCandidates`), new listing radar (`/api/announcements`), exit-liquidity detection, announcement radar |
+| `897e155` | 88-assertion stress test suite — all passing |
+| `e5f473f` | **Critical R:R bug fix** — SL was 1.5×ATR (gave TP1 R:R 1.33); corrected to 1.0×ATR (TP1 R:R 2.0, TP2 R:R 3.5) |
+| `1e92d2f` | Next.js 14.2.5 → 14.2.35 security patch |
+| `dac1d84` | Switch Binance base URL to `data-api.binance.vision` (bypasses geo-blocks) |
+| `e988cc7` | Brute-force audit pass — 8 bugs fixed |
+| `297da36` | v3.0 initial: 14-signal SMC engine, 4h HTF confluence, HA trend, 7 patterns, auto-refresh UI |
+
+---
+
+## 18. New listing detection (two independent paths)
+
+### Path 1 — Candle-truncation heuristic (`scoring.ts → estimateListingAgeHours`)
+Zero extra API calls. Binance klines always return as many candles as exist up to the requested limit (250). If the returned array is shorter than `KLINES_LIMIT`, the first candle is the genesis candle — its `openTime` gives listing age directly.
+
+- Checks 15m → 1h → 4h (finest to coarsest) for precision up to ~41.7 days
+- `isNewListing = true` if age ≤ 48h
+- Fresh listings are sorted ahead of same-tier peers in the results
+
+### Path 2 — Announcement radar (`lib/announcements.ts → GET /api/announcements`)
+Pre-price signal — catches a coin before it has any candle history at all.
+
+- Polls Binance's undocumented internal CMS endpoint (`/bapi/composite/v1/public/cms/article/list/query`) for catalogId=48 ("New Cryptocurrency Listing")
+- Parses titles matching `"Binance Will List <Name> (<SYMBOL>)"` format
+- Deduplicates per symbol, keeps earliest announcement, drops items >168h old
+- **Isolated in its own API route** — failure never blocks `/api/scan`
+- Fails silently (empty array, 5s abort timeout) on any error
+- Has historically returned 403; treat as a bonus signal only
+
+### Exit-liquidity detection (`scoring.ts`)
+Fresh listing (≤48h) that has already pumped to an ATH then dropped ≥25% from it → `possibleExitLiquidity: true`. Shows a ⚠ warning in the reason string instead of a buy signal.
+
+---
+
+## 19. Scan universe (`lib/binance.ts → getScanCandidates`)
+
+Blended two buckets, filtered to actively-TRADING symbols on Binance (`exchangeInfo` status check) AND listed on GateIO:
+
+| Bucket | Slots | Filter |
+|--------|-------|--------|
+| Volume leaders | 12 (fixed) | Top USDT pairs by 24h quote volume — BTC/ETH/majors for context |
+| Big movers | 10–45 (default 35) | ≥15% 24h price change, ≥$300k USDT 24h volume |
+
+Query params: `?limit=35` (mover slots, clamped 10–45), `?minMove=15` (% move threshold).
+
+`_binanceTradingCache` is module-scoped — `exchangeInfo` is fetched once per serverless invocation, not per symbol.
+
+---
+
+## 20. Repo references
 
 | Repo | Used for |
 |------|----------|
