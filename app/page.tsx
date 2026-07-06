@@ -478,7 +478,7 @@ export default function Home() {
       // limit = how many "big mover" slots to scan (mid/low-cap, big % moves),
       // on top of a fixed 12 liquidity-leader slots (BTC/ETH/majors for context).
       // minMove = ignore moves smaller than this % (default 15, so 30/60/80% moves are covered).
-      const res = await fetch("/api/scan?limit=35&minMove=15");
+      const res = await fetch("/api/scan?limit=40&minMove=15");
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string })?.error ?? `HTTP ${res.status}`);

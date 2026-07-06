@@ -28,19 +28,21 @@ export async function GET(req: Request) {
   // Guard against NaN from malformed query params (e.g. ?limit=abc) — an
   // un-guarded NaN would flow into Math.min/Math.max/slice() and silently
   // zero out the entire big-movers bucket with no error thrown.
-  const limitParamRaw = parseInt(url.searchParams.get("limit") ?? "35");
-  const limitParam = Number.isFinite(limitParamRaw) ? limitParamRaw : 35;
-  const moverSlots = Math.min(Math.max(limitParam, 10), 45); // hard cap: stay inside free-tier 10s budget
+  const limitParamRaw = parseInt(url.searchParams.get("limit") ?? "40");
+  const limitParam = Number.isFinite(limitParamRaw) ? limitParamRaw : 40;
+  const moverSlots = Math.min(Math.max(limitParam, 10), 55); // raised cap — see MAX_TOTAL_CANDIDATES note in binance.ts
 
   const minMovePctRaw = parseFloat(url.searchParams.get("minMove") ?? "15");
   const minMovePct = Number.isFinite(minMovePctRaw) ? minMovePctRaw : 15;
 
   try {
     const tickers = await getScanCandidates({
-      volumeSlots: 12,          // BTC/ETH/majors — context, rarely tier S/A on their own
       moverSlots,                // mid/low-cap coins with big 24h moves — the point of this fix
       minMovePct,                 // ignore <15% noise by default; raise via ?minMove=30 for only 30%+ etc.
       minMoverVolume: 300_000    // USDT 24h floor — filters out illiquid/manipulated micro-caps
+      // volumeSlots, extremeMoverSlots, momentumSlots, momentumWindowSize,
+      // momentumMinPct, momentumMinVolume: left at their (raised) defaults
+      // from lib/binance.ts rather than overridden here.
     });
 
     if (!tickers.length) {
@@ -48,12 +50,13 @@ export async function GET(req: Request) {
     }
 
     // Fetch klines concurrently with a concurrency cap to avoid rate-limiting.
-    // Binance weight budget is 6000/min — even 50 symbols (~300 weight) is
+    // Binance weight budget is 6000/min — even 70 symbols (~420 weight) is
     // nowhere near that limit, so the real constraint is wall-clock time on
-    // the free tier, not API weight. Larger batches + shorter delay than
-    // before to fit more symbols inside the ~10s window.
-    const BATCH = 8;
-    const INTER_BATCH_DELAY_MS = 150;
+    // the free tier, not API weight. Larger batches + shorter delay to fit
+    // the raised MAX_TOTAL_CANDIDATES (70, see binance.ts) inside the ~10s
+    // window — see the rough estimate/caveat there too.
+    const BATCH = 10;
+    const INTER_BATCH_DELAY_MS = 100;
     const results = [];
 
     for (let i = 0; i < tickers.length; i += BATCH) {
