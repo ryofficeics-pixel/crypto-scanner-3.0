@@ -16,7 +16,7 @@ import { KLINES_LIMIT } from "./binance";
 import { computeIndicators, IndicatorSnapshot } from "./indicators";
 import { computeZigZag, detectStructure, Pivot } from "./zigzag";
 import { findOrderBlocks, findFairValueGaps, findLiquidityZones, LiquidityZone } from "./smc";
-import { detectPattern } from "./patterns";
+import { detectPattern, VolumeContext } from "./patterns";
 
 /**
  * Listing-age heuristic — zero extra API calls.
@@ -175,11 +175,16 @@ function evaluateFlags(
   }
 
   // ── 3. EMA200 support test 1h ────────────────────────────────
+  // Note: EMA200 needs ~200+ candles to converge. If fewer than 250
+  // candles are available, the EMA isn't stable yet — still emit a weak
+  // "near support" signal but never mark it strong (bounceConfirmed skips
+  // the volume check entirely so it can't fire as strong).
   if (ind1h.ema200 !== null) {
     const distPct = ((ind1h.close - ind1h.ema200) / ind1h.ema200) * 100;
     const nearSupport = Math.abs(distPct) <= 1.5;
+    const enoughCandles = candles1h.length >= 250;
     const bounceConfirmed =
-      nearSupport &&
+      enoughCandles && nearSupport &&
       ind1h.close > ind1h.ema200 &&
       ind1h.volume > (ind1h.volumeAvg20 ?? Infinity);
     pushFlag(flags, {
@@ -200,6 +205,23 @@ function evaluateFlags(
       weak:   shrinking,
       strong: bullishCross
     });
+
+    // MACD histogram acceleration: slope of the histogram is steepening
+    // (getting more negative faster = bearish acceleration, or more positive
+    // faster = bullish acceleration). Complements HA's lagging trend with a
+    // leading momentum signal — fires before the HA colour change.
+    if (ind1h.macdHistPrev2 !== null) {
+      const slope1 = ind1h.macdHist - ind1h.macdHistPrev;
+      const slope0 = ind1h.macdHistPrev - ind1h.macdHistPrev2;
+      const accelerating = Math.abs(slope1) > Math.abs(slope0) && slope1 * slope0 > 0;
+      const bullishMomentum = ind1h.macdHist > ind1h.macdHistPrev && ind1h.macdHist < 0;
+      pushFlag(flags, {
+        key: "macd_accel",
+        label: `MACD accel(1h) ${ind1h.macdHist > ind1h.macdHistPrev ? "▲" : "▼"}${accelerating ? " ↑" : ""}`,
+        weak:   bullishMomentum,
+        strong: bullishMomentum && accelerating
+      });
+    }
   }
 
   // ── 5. Volume spike 15m ──────────────────────────────────────
@@ -366,15 +388,26 @@ export function scanSymbol(
   const pivots4h   = computeZigZag(h4, 2.5); // wider deviation on 4h for cleaner pivots
   const structure4h = detectStructure(pivots4h);
 
-  // Compute liquidity zones ONCE and reuse in both evaluateFlags and nearestBuySide lookup
-  const zones1h = findLiquidityZones(pivots1h);
+  // Compute liquidity zones from 4h pivots (wider deviation = fewer, more
+  // reliable levels). Previously used 1h pivots which produced too many
+  // zones from short-term noise, causing false "LIQ" flags on random swings.
+  const zones4h = findLiquidityZones(pivots4h);
 
   // Pattern detection: prefer 4h pattern when meaningful, fall back to 1h
-  const pattern1h = detectPattern(pivots1h);
-  const pattern4h = detectPattern(pivots4h);
+  // Volume context is passed to filter out patterns forming on low participation.
+  const volCtx1h: VolumeContext = {
+    recentVolumes: h1.slice(-8).map((c) => c.volume),
+    volumeAvg20: ind1h.volumeAvg20 ?? 0
+  };
+  const volCtx4h: VolumeContext = {
+    recentVolumes: h4.slice(-8).map((c) => c.volume),
+    volumeAvg20: ind4h.volumeAvg20 ?? 0
+  };
+  const pattern1h = detectPattern(pivots1h, volCtx1h);
+  const pattern4h = detectPattern(pivots4h, volCtx4h);
   const pattern   = pattern4h.type !== "none" ? pattern4h : pattern1h;
 
-  const flags = evaluateFlags(ind15, ind1h, ind4h, h1, h4, zones1h);
+  const flags = evaluateFlags(ind15, ind1h, ind4h, h1, h4, zones4h);
 
   // ── Pattern signal ────────────────────────────────────────────
   if (pattern.type !== "none") {
@@ -416,7 +449,8 @@ export function scanSymbol(
 
   // Nearest buy-side liquidity below price — computed BEFORE entry/SL since
   // it now feeds into the entry price (limit order at the zone, not market).
-  const nearestBuySide = zones1h
+  // Uses 4h-derived zones for fewer but more reliable levels.
+  const nearestBuySide = zones4h
     .filter((z) => z.type === "buy_side" && z.price < price)
     .sort((a, b) => b.price - a.price)[0] ?? null;
 

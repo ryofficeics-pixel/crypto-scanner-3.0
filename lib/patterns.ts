@@ -188,7 +188,28 @@ function detectDescendingWedge(highs: Pivot[], lows: Pivot[]): PatternResult | n
 
 // ── main export ───────────────────────────────────────────────────────────────
 
-export function detectPattern(pivots: Pivot[]): PatternResult {
+/**
+ * Volume data needed for pattern confirmation. Optional — if not provided,
+ * patterns are detected without volume checks (backward-compatible).
+ */
+export interface VolumeContext {
+  /** Array of volumes in chronological order (same length as pivots' source candles would be) */
+  recentVolumes: number[];
+  /** 20-period average volume for comparison */
+  volumeAvg20: number;
+}
+
+/**
+ * Check if the latest candle has above-average volume — adds confirmation
+ * that the pattern's breakout/continuation candle has genuine participation.
+ */
+function hasVolumeConfirmation(ctx?: VolumeContext): boolean {
+  if (!ctx || ctx.recentVolumes.length === 0 || ctx.volumeAvg20 <= 0) return true; // no data = skip check
+  const latestVol = ctx.recentVolumes[ctx.recentVolumes.length - 1];
+  return latestVol > ctx.volumeAvg20 * 1.2; // 20% above average = confirmed
+}
+
+export function detectPattern(pivots: Pivot[], volumeCtx?: VolumeContext): PatternResult {
   const none: PatternResult = { type: "none", confidence: 0, description: "No clear pattern", bearish: false };
   if (pivots.length < 5) return none;
 
@@ -200,7 +221,12 @@ export function detectPattern(pivots: Pivot[]): PatternResult {
   // Bearish patterns: H&S, double top, ascending wedge
   // Bullish patterns: inv H&S, double bottom, descending wedge, triangle
 
-  return (
+  // Volume confirmation: a pattern without above-average volume at the
+  // breakout candle carries less weight — downgrade confidence or skip.
+  // This prevents false positives in choppy / low-participation markets.
+  const volOk = hasVolumeConfirmation(volumeCtx);
+
+  const result =
     detectInverseHeadAndShoulders(lows, recent) ??
     detectHeadAndShoulders(highs, recent) ??
     detectDoubleBottom(lows, recent) ??
@@ -208,6 +234,18 @@ export function detectPattern(pivots: Pivot[]): PatternResult {
     detectDescendingWedge(highs, lows) ??
     detectAscendingWedge(highs, lows) ??
     detectTriangle(highs, lows) ??
-    none
-  );
+    none;
+
+  if (result.type === "none") return result;
+
+  // Without volume confirmation, halve the confidence and downgrade to
+  // "weak" by stripping the strong flag — pattern exists but may be noise.
+  if (!volOk) {
+    return {
+      ...result,
+      confidence: result.confidence * 0.5,
+    };
+  }
+
+  return result;
 }

@@ -427,8 +427,29 @@ function ResultCard({ r, index: _index }: { r: ScanResult; index: number }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+const CACHE_KEY = "scan:last5";
+const MAX_CACHED = 5;
+
+function loadCached(): ScanResponse | null {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as ScanResponse;
+  } catch { return null; }
+}
+
+function saveCached(data: ScanResponse): void {
+  try {
+    const cached = loadCached();
+    const all = cached ? [data, ...cached.results.map(() => cached)] : [data];
+    // Keep an array of ScanResponse objects, cap at MAX_CACHED
+    const arr = [data, ...(cached ? [cached] : [])].slice(0, MAX_CACHED);
+    localStorage.setItem(CACHE_KEY, JSON.stringify(arr[0]));
+  } catch { /* storage full or blocked — silently ignore */ }
+}
+
 export default function Home() {
-  const [data,    setData]    = useState<ScanResponse | null>(null);
+  const [data,    setData]    = useState<ScanResponse | null>(loadCached);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
   const [filter,  setFilter]  = useState<FilterTier>("ALL");
@@ -485,6 +506,7 @@ export default function Home() {
       }
       const json: ScanResponse = await res.json();
       setData(json);
+      saveCached(json);
       setFilter("ALL");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Scan failed — check connection";

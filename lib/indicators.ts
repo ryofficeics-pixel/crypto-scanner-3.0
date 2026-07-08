@@ -21,6 +21,7 @@ export interface IndicatorSnapshot {
   ema50Prev: number | null;
   macdHist: number | null;
   macdHistPrev: number | null;
+  macdHistPrev2: number | null; // two bars ago — for acceleration slope
   macdLine: number | null;
   macdSignal: number | null;
   bbUpper: number | null;
@@ -205,6 +206,7 @@ export function computeIndicators(candles: Candle[]): IndicatorSnapshot {
 
   const lastMacd  = last(macdSeries, 0);
   const prevMacd  = last(macdSeries, 1);
+  const prev2Macd = last(macdSeries, 2);
   const lastBb    = last(bbSeries, 0);
   const lastStoch = last(stochRsiSeries, 0);
   const prevStoch = last(stochRsiSeries, 1);
@@ -219,6 +221,7 @@ export function computeIndicators(candles: Candle[]): IndicatorSnapshot {
     ema50Prev:     last(ema50Series, 1),
     macdHist:      lastMacd?.histogram ?? null,
     macdHistPrev:  prevMacd?.histogram ?? null,
+    macdHistPrev2: prev2Macd?.histogram ?? null,
     macdLine:      lastMacd?.MACD      ?? null,
     macdSignal:    lastMacd?.signal    ?? null,
     bbUpper:       lastBb?.upper  ?? null,

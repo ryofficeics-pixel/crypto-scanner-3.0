@@ -43,14 +43,55 @@ const STABLES = new Set([
 ]);
 
 /**
- * Single call to /ticker/24hr, cleaned and typed. Every other selection
- * function below filters/sorts this same in-memory list — we never hit
- * the ticker endpoint more than once per scan.
+ * Module-scoped caches for exchange/filter data — populated once per
+ * serverless invocation, reused across all calls within that invocation.
+ * This eliminates redundant HTTP round-trips without adding a persistent
+ * store (no DB, no Redis).
+ */
+let _gateioCache: Set<string> | null = null;
+
+/**
+ * Fetch the set of actively tradable USDT pairs from GateIO.
+ * Normalises "BASE_USDT" format to "BASEUSDT" (Binance-compatible).
+ * Cached for the lifetime of the invocation.
+ */
+async function getGateioSymbols(): Promise<Set<string>> {
+  if (_gateioCache) return _gateioCache;
+  try {
+    const res = await fetch("https://api.gateio.ws/api/v4/spot/currency_pairs", {
+      next: { revalidate: 0 }
+    });
+    if (!res.ok) { _gateioCache = new Set(); return _gateioCache; }
+    const data: Record<string, unknown>[] = await res.json();
+    const symbols = new Set<string>();
+    for (const pair of data) {
+      if (pair.trade_status === "tradable" && pair.quote === "USDT") {
+        symbols.add((pair.base as string) + "USDT");
+      }
+    }
+    _gateioCache = symbols;
+    return symbols;
+  } catch {
+    _gateioCache = new Set(); // fail open — GateIO down shouldn't break scan
+    return _gateioCache;
+  }
+}
+
+/**
+ * Single call to /ticker/24hr, cleaned, typed, and filtered to coins
+ * actively tradable on Binance AND GateIO. The GateIO filter removes
+ * exchange-only coins that aren't actionable for a dual-exchange trader.
+ * Fails open: if GateIO is unreachable, returns all Binance USDT pairs.
  */
 async function getAllUsdtPairs(): Promise<Ticker24hr[]> {
-  const data = await safeFetchJson(`${BASE_URL}/api/v3/ticker/24hr`);
+  const [data, gateioSymbols] = await Promise.all([
+    safeFetchJson(`${BASE_URL}/api/v3/ticker/24hr`),
+    getGateioSymbols()
+  ]);
+  const useGateioFilter = gateioSymbols.size > 0;
   return (data as Record<string, unknown>[])
     .filter((t) => typeof t.symbol === "string" && (t.symbol as string).endsWith("USDT"))
+    .filter((t) => !useGateioFilter || gateioSymbols.has(t.symbol as string))
     .filter((t) => !/(UP|DOWN|BULL|BEAR)USDT$/.test(t.symbol as string))
     .filter((t) => !STABLES.has(t.symbol as string))
     .map((t) => ({
@@ -250,7 +291,12 @@ export async function getScanCandidates(opts?: {
   // movers have barely changed in the last 24h.
   if (combined.length < MAX_TOTAL_CANDIDATES) {
     const selected = new Set(combined.map((t) => t.symbol));
-    const remaining = all.filter((t) => !selected.has(t.symbol));
+    // Pre-filter pool: exclude coins with zero volume or <$5k daily volume
+    // (likely delisted, suspended, or dead) to avoid wasting kline requests
+    // on symbols that will score NONE and be hidden anyway.
+    const remaining = all.filter(
+      (t) => !selected.has(t.symbol) && t.quoteVolume >= 5_000
+    );
     // Fisher-Yates shuffle a copy, then take what we need
     const shuffled = [...remaining];
     for (let i = shuffled.length - 1; i > 0; i--) {
