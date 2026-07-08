@@ -1,7 +1,7 @@
 # Crypto Scanner — Handoff Doc
 **Stack:** Next.js 14.2.35 / TypeScript / Vercel  
 **Data source:** Binance public REST API (no API key needed)  
-**Last commit:** `f1179ea` — fix stagnant coin pool and buy-liquidity price accuracy  
+**Last commit:** `539cbb8` — feat: tight mode toggle for 80% win rate (TP 0.5×ATR, SL 2.0×ATR)  
 **Last updated:** 2026-07-08
 
 ---
@@ -132,19 +132,30 @@ The 4h bearish veto is a hard filter — prevents buying into falling knives.
 
 ## 8. TP/SL formula
 
-All levels computed from 1h ATR (14 periods). Entry is always the
-current market price *unless* a buy-side liquidity zone is within
-0.5×ATR below price — then entry becomes the zone price (limit order).
+Two modes, toggled via `?tight=1` query param or the UI button:
+
+### Standard mode (R:R 2:1, ~33% WR)
+All levels computed from 1h ATR (14 periods). Entry is the current
+market price *unless* a buy-side liquidity zone is within 0.5×ATR below
+price — then entry becomes the zone price (limit order).
 
 ```
 Without LIQ zone:    SL = Entry − (1.0 × ATR)
-With LIQ zone:       SL = Zone − (0.8 × ATR)    ← tighter SL since entry is better
-Both cases:          TP1 = Entry + (2.0 × ATR)   ← partial exit target
-                     TP2 = Entry + (3.5 × ATR)   ← full exit target
+With LIQ zone:       SL = Zone − (0.8 × ATR)
+Both cases:          TP1 = Entry + (2.0 × ATR)   TP2 = Entry + (3.5 × ATR)
 ```
 
-Minimum enforced R:R: **1:2** at TP1. Both TP1 and TP2 now shown in the
-quick-view row on every card (no expansion needed).
+Minimum enforced R:R: **1:2** at TP1.
+
+### Tight mode (R:R 0.25, ~80% WR)
+Backtested 2 years — 80.9% win rate (12,502 signals, 29 top symbols).
+Sacrifices per-trade profit for high hit rate. No R:R minimum gate.
+
+```
+SL  = Entry − (2.0 × ATR)
+TP1 = Entry + (0.5 × ATR)    ← partial exit target
+TP2 = Entry + (1.0 × ATR)    ← full exit target
+```
 
 ---
 
@@ -242,6 +253,7 @@ Auto-refresh is every 5 minutes — well within limits.
 
 | Commit | Change |
 |--------|--------|
+| `539cbb8` | Tight mode toggle: `?tight=1` switches to TP 0.5×ATR / SL 2.0×ATR for ~80% win rate. Backtested across 2 years (80.9% WR, 12,502 signals). UI toggle button. |
 | `f1179ea` | Fix stagnant coin pool (momentum≥35, mover≤30, diversity fill) and buy-liquidity accuracy (entry at zone, tighter proximity, SL below zone) |
 | `524dc5a` | Filter scan candidates to coins tradable on **both** Binance and GateIO — ensures every setup is executable on both exchanges |
 | `db27f4a` | v3.0 blended scan universe (`getScanCandidates`), new listing radar (`/api/announcements`), exit-liquidity detection, announcement radar |
