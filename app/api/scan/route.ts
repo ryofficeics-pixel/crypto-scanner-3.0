@@ -35,6 +35,8 @@ export async function GET(req: Request) {
   const minMovePctRaw = parseFloat(url.searchParams.get("minMove") ?? "15");
   const minMovePct = Number.isFinite(minMovePctRaw) ? minMovePctRaw : 15;
 
+  const tightMode = url.searchParams.get("tight") === "1";
+
   try {
     const tickers = await getScanCandidates({
       moverSlots,                // mid/low-cap coins with big 24h moves — the point of this fix
@@ -67,7 +69,7 @@ export async function GET(req: Request) {
           return scanSymbol(ticker.symbol, candles, {
             priceChangePercent: ticker.priceChangePercent,
             quoteVolume: ticker.quoteVolume
-          });
+          }, tightMode);
         })
       );
 

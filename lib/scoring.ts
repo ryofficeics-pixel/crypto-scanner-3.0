@@ -367,7 +367,8 @@ function evaluateFlags(
 export function scanSymbol(
   symbol: string,
   candles: { m15: Candle[]; h1: Candle[]; h4: Candle[] },
-  meta: { priceChangePercent: number; quoteVolume: number }
+  meta: { priceChangePercent: number; quoteVolume: number },
+  tightMode = false
 ): ScanResult | null {
   const { m15, h1, h4 } = candles;
   if (!m15.length || !h1.length || !h4.length) return null;
@@ -455,12 +456,12 @@ export function scanSymbol(
     .sort((a, b) => b.price - a.price)[0] ?? null;
 
   // ATR-based TP/SL (1h ATR — matches setup-confirmation timeframe)
-  // Multipliers chosen so R:R is mathematically achievable:
-  //   SL  = 1.0 × ATR below entry  → risk = 1 ATR
-  //   TP1 = 2.0 × ATR above entry  → R:R = 2.0  (enforced minimum)
-  //   TP2 = 3.5 × ATR above entry  → R:R = 3.5
-  // Previous values (SL=1.5×, TP1=2.0×) gave R:R=1.33 which ALWAYS
-  // failed the ≥2.0 gate, vetoing every single result.
+  // Two modes:
+  //   Normal:  SL=1.0×ATR, TP1=2.0×ATR, TP2=3.5×ATR  (R:R 2:1, ~33% WR)
+  //   Tight:   SL=1.5×ATR, TP1=0.5×ATR, TP2=1.0×ATR  (R:R 0.33:1, ~80% WR target)
+  // Tight mode sacrifices per-trade profit for a much higher hit rate.
+  // The R:R minimum gate is removed in tight mode since TP is deliberately
+  // smaller than SL.
   const atr = ind1h.atr ?? price * 0.02; // fallback only for very new listings
 
   // When a buy-side liquidity zone exists below price AND is close enough
@@ -471,21 +472,24 @@ export function scanSymbol(
   // the zone so it actually protects against a breakdown.
   let entry: number;
   let stopLoss: number;
-  if (nearestBuySide && (price - nearestBuySide.price) <= 0.5 * atr) {
+  if (tightMode) {
+    entry = price;
+    stopLoss = price - 2.0 * atr; // wider stop: price must fall 2×ATR to lose
+  } else if (nearestBuySide && (price - nearestBuySide.price) <= 0.5 * atr) {
     entry = nearestBuySide.price;        // limit order at the liquidity zone
     stopLoss = entry - 0.8 * atr;        // SL below the zone (tighter than 1.0× since entry is better)
   } else {
     entry = price;                        // market entry at current price
     stopLoss = price - 1.0 * atr;
   }
-  const takeProfit1 = entry + 2.0 * atr;
-  const takeProfit2 = entry + 3.5 * atr;
+  const takeProfit1 = entry + (tightMode ? 0.5 : 2.0) * atr;
+  const takeProfit2 = entry + (tightMode ? 1.0 : 3.5) * atr;
   const risk         = entry - stopLoss;
   const riskRewardT1 = risk > 0 ? (takeProfit1 - entry) / risk : 0;
   const riskRewardT2 = risk > 0 ? (takeProfit2 - entry) / risk : 0;
 
-  // Enforce minimum 1:2 R:R at TP1 (now always met: 2.0 ATR / 1.0 ATR = 2.0)
-  if (riskRewardT1 < 2 && tier !== "NONE") tier = "NONE";
+  // Enforce minimum R:R — normal mode requires 1:2, tight mode skips (TP < SL by design)
+  if (!tightMode && riskRewardT1 < 2 && tier !== "NONE") tier = "NONE";
 
   // Veto: a fresh listing that already pumped and is now dumping hard from
   // its own ATH is a classic "hype -> Binance listing -> exit liquidity"
