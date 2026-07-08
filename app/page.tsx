@@ -454,7 +454,7 @@ export default function Home() {
   const [error,   setError]   = useState<string | null>(null);
   const [filter,  setFilter]  = useState<FilterTier>("ALL");
   const [nextIn,  setNextIn]  = useState(AUTO_REFRESH_MS);
-  const [tightMode, setTightMode] = useState(false);
+  const [tightMode, setTightMode] = useState(true); // default to tight mode (80% WR)
 
   // Deliberately separate from `data`/`error` above: this comes from an
   // unofficial, best-effort endpoint (see lib/announcements.ts). If it
