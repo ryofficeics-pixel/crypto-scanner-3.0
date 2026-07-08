@@ -158,7 +158,7 @@ export async function getScanCandidates(opts?: {
 }): Promise<Ticker24hr[]> {
   const {
     volumeSlots    = 18,
-    moverSlots     = 40,
+    moverSlots     = 30,
     minMovePct     = 15,     // ignore noise below this — we want the 30/60/80% moves
     minMoverVolume = 300_000, // USDT 24h — floor to filter dead/illiquid pumps
     // A brand-new listing can be pumping hard within its first few hours
@@ -175,7 +175,13 @@ export async function getScanCandidates(opts?: {
     // started accelerating in the last hour — 24h priceChangePercent nets
     // that out and hides it from every bucket above until it's already
     // pumped for a while. Uses a dedicated rolling-window ticker call.
-    momentumSlots      = 20,
+    //
+    // Note: momentumSlots raised from 20→35 and moverSlots lowered from
+    // 40→30 because the 1h rolling window rotates much faster than the 24h
+    // window — a coin that pumped in the last hour leaves the bucket within
+    // an hour, while 24h movers persist all day. Favoring momentum breaks
+    // the "same coins every scan" stagnation.
+    momentumSlots      = 35,
     momentumWindowSize = "1h",
     momentumMinPct     = 8,     // an 8%+ move within just 1h is a real signal
     momentumMinVolume  = 50_000
@@ -236,7 +242,25 @@ export async function getScanCandidates(opts?: {
   // actual function duration in the Vercel dashboard; if you see
   // occasional timeouts, dial this back down rather than push it further.
   const MAX_TOTAL_CANDIDATES = 70;
-  const combined = Array.from(merged.values());
+  let combined = Array.from(merged.values());
+
+  // Diversity fill: if we're under the cap after all priority buckets,
+  // randomly sample from the remaining pool to break the "same coins every
+  // scan" stagnation. This ensures fresh names appear even when the top
+  // movers have barely changed in the last 24h.
+  if (combined.length < MAX_TOTAL_CANDIDATES) {
+    const selected = new Set(combined.map((t) => t.symbol));
+    const remaining = all.filter((t) => !selected.has(t.symbol));
+    // Fisher-Yates shuffle a copy, then take what we need
+    const shuffled = [...remaining];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    const needed = MAX_TOTAL_CANDIDATES - combined.length;
+    combined = combined.concat(shuffled.slice(0, needed));
+  }
+
   return combined.length > MAX_TOTAL_CANDIDATES
     ? combined.slice(0, MAX_TOTAL_CANDIDATES)
     : combined;

@@ -300,10 +300,14 @@ function evaluateFlags(
   }
 
   // ── 12. Buy-side liquidity proximity ─────────────────────────
+  // Note: proximity tightened from 0.8% → 0.3% because a loose threshold
+  // falsely implied support was nearby when price was actually well above
+  // the zone, leading users to buy at market expecting a bounce that never
+  // came.
   const buySideZones = zones1h.filter((z) => z.type === "buy_side");
   const nearBuySide  = buySideZones.find((z) => {
     const dist = Math.abs(price1h - z.price) / z.price;
-    return dist <= 0.008; // within 0.8% of a liquidity cluster
+    return dist <= 0.003; // within 0.3% of a liquidity cluster
   });
   if (nearBuySide) {
     flags.push({
@@ -410,6 +414,12 @@ export function scanSymbol(
   else if (signalCount >= 3 && strongCount >= 1 && structure4h.trend !== "down") tier = "A";
   else if (signalCount >= 2) tier = "B";
 
+  // Nearest buy-side liquidity below price — computed BEFORE entry/SL since
+  // it now feeds into the entry price (limit order at the zone, not market).
+  const nearestBuySide = zones1h
+    .filter((z) => z.type === "buy_side" && z.price < price)
+    .sort((a, b) => b.price - a.price)[0] ?? null;
+
   // ATR-based TP/SL (1h ATR — matches setup-confirmation timeframe)
   // Multipliers chosen so R:R is mathematically achievable:
   //   SL  = 1.0 × ATR below entry  → risk = 1 ATR
@@ -417,13 +427,28 @@ export function scanSymbol(
   //   TP2 = 3.5 × ATR above entry  → R:R = 3.5
   // Previous values (SL=1.5×, TP1=2.0×) gave R:R=1.33 which ALWAYS
   // failed the ≥2.0 gate, vetoing every single result.
-  const atr         = ind1h.atr ?? price * 0.02; // fallback only for very new listings
-  const stopLoss    = price - 1.0 * atr;
-  const takeProfit1 = price + 2.0 * atr;
-  const takeProfit2 = price + 3.5 * atr;
-  const risk         = price - stopLoss;
-  const riskRewardT1 = risk > 0 ? (takeProfit1 - price) / risk : 0;
-  const riskRewardT2 = risk > 0 ? (takeProfit2 - price) / risk : 0;
+  const atr = ind1h.atr ?? price * 0.02; // fallback only for very new listings
+
+  // When a buy-side liquidity zone exists below price AND is close enough
+  // to use as a limit-entry level, the entry becomes the zone price —
+  // not the current market price. This fixes the bug where the scanner
+  // showed "buy-side liquidity at $X" but placed a market entry above it,
+  // so the zone was never actually used for the trade. SL goes just below
+  // the zone so it actually protects against a breakdown.
+  let entry: number;
+  let stopLoss: number;
+  if (nearestBuySide && (price - nearestBuySide.price) <= 0.5 * atr) {
+    entry = nearestBuySide.price;        // limit order at the liquidity zone
+    stopLoss = entry - 0.8 * atr;        // SL below the zone (tighter than 1.0× since entry is better)
+  } else {
+    entry = price;                        // market entry at current price
+    stopLoss = price - 1.0 * atr;
+  }
+  const takeProfit1 = entry + 2.0 * atr;
+  const takeProfit2 = entry + 3.5 * atr;
+  const risk         = entry - stopLoss;
+  const riskRewardT1 = risk > 0 ? (takeProfit1 - entry) / risk : 0;
+  const riskRewardT2 = risk > 0 ? (takeProfit2 - entry) / risk : 0;
 
   // Enforce minimum 1:2 R:R at TP1 (now always met: 2.0 ATR / 1.0 ATR = 2.0)
   if (riskRewardT1 < 2 && tier !== "NONE") tier = "NONE";
@@ -435,11 +460,6 @@ export function scanSymbol(
   // likely generated ON the way up and are now stale/wrong. Force NONE so
   // it only ever surfaces via the NEW/warning badge, never as a buy tier.
   if (possibleExitLiquidity) tier = "NONE";
-
-  // Nearest buy-side liquidity below price (for UI display)
-  const nearestBuySide = zones1h
-    .filter((z) => z.type === "buy_side" && z.price < price)
-    .sort((a, b) => b.price - a.price)[0] ?? null;
 
   const activeReasons = flags
     .filter((f) => f.strong || f.weak)
@@ -463,7 +483,7 @@ export function scanSymbol(
     structureEvent: structure4h.event,
     flags,
     reason,
-    entry: price,
+    entry,
     stopLoss,
     takeProfit1,
     takeProfit2,
