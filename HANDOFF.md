@@ -1,8 +1,8 @@
 # Crypto Scanner — Handoff Doc
 **Stack:** Next.js 14.2.35 / TypeScript / Vercel  
 **Data source:** Binance public REST API (no API key needed)  
-**Last commit:** `524dc5a` — filter scan candidates to coins tradable on both Binance and GateIO  
-**Last updated:** 2026-07-04
+**Last commit:** `f1179ea` — fix stagnant coin pool and buy-liquidity price accuracy  
+**Last updated:** 2026-07-08
 
 ---
 
@@ -10,7 +10,7 @@
 
 A mobile-first web dashboard that scans a blended universe of Binance USDT spot pairs on demand. Every tap of **Scan** (or auto-refresh every 5 minutes) fetches live OHLCV data across 3 timeframes (15m / 1h / 4h), computes 14 signals spanning indicators, Smart Money Concepts on both 1h and 4h, Heikin-Ashi trend, and 7 chart pattern types — then ranks results into Tier S / A / B with ATR-based TP1/TP2/SL.
 
-Scan universe is a **blended** set: 12 volume leaders (majors) + up to 45 big % movers (≥15% 24h move, ≥$300k USDT volume), filtered to coins actively trading on **both Binance and GateIO**.
+Scan universe is a **blended** set: 18 volume leaders, up to 30 big % movers (≥15% 24h, ≥$300k), up to 20 extreme movers (≥50% 24h, ≥$20k), up to 35 momentum movers (≥8% in last 1h, ≥$50k), plus random diversity fill up to 70 total — all filtered to coins on **both Binance and GateIO**.
 
 No API key. No database. No WebSocket server. Opens in any mobile browser.
 
@@ -108,7 +108,7 @@ The 4h bearish veto is a hard filter — prevents buying into falling knives.
 | 9 | Fair Value Gap | 1h | Price filling bullish FVG | — |
 | 10 | **Order Block (HTF)** | **4h** | — | **Price in unmitigated 4h OB** |
 | 11 | **FVG (HTF)** | **4h** | Price filling 4h bullish FVG | — |
-| 12 | **Buy-side Liquidity** | **1h pivots** | Within 0.8% of cluster | ≥3-touch cluster |
+| 12 | **Buy-side Liquidity** | **1h pivots** | Within 0.3% of cluster | ≥3-touch cluster |
 | 13 | **Heikin-Ashi trend** | **1h** | Transitioning (colour flip) | 3 bullish HA candles, no lower wicks |
 | 14 | **RSI(14) 4h** | **4h** | 30–45 | <30 and turning up |
 | + | Chart pattern | 1h or 4h | Triangle/asc.wedge | Inv H&S, double bottom, desc.wedge |
@@ -132,12 +132,15 @@ The 4h bearish veto is a hard filter — prevents buying into falling knives.
 
 ## 8. TP/SL formula
 
-All levels computed from 1h ATR (14 periods):
+All levels computed from 1h ATR (14 periods). Entry is always the
+current market price *unless* a buy-side liquidity zone is within
+0.5×ATR below price — then entry becomes the zone price (limit order).
 
 ```
-SL  = Entry − (1.5 × ATR)
-TP1 = Entry + (2.0 × ATR)   ← partial exit target
-TP2 = Entry + (3.5 × ATR)   ← full exit target
+Without LIQ zone:    SL = Entry − (1.0 × ATR)
+With LIQ zone:       SL = Zone − (0.8 × ATR)    ← tighter SL since entry is better
+Both cases:          TP1 = Entry + (2.0 × ATR)   ← partial exit target
+                     TP2 = Entry + (3.5 × ATR)   ← full exit target
 ```
 
 Minimum enforced R:R: **1:2** at TP1. Both TP1 and TP2 now shown in the
@@ -160,7 +163,7 @@ quick-view row on every card (no expansion needed).
 
 - **CHoCH / BOS badge** — appears inline with the symbol name when 4h structure
   has a bullish Change-of-Character or Break-of-Structure event
-- **LIQ pill** — appears when price is within 0.8% of a buy-side liquidity cluster
+- **LIQ pill** — appears when price is within 0.3% of a buy-side liquidity cluster
 - **TP2** now shown in the quick-view row alongside TP1 and SL (no tap needed)
 - **R:R row** shows both TP1 and TP2 multiples
 - Empty-state illustration with context message when no signals match the filter
@@ -230,8 +233,8 @@ Auto-refresh is every 5 minutes — well within limits.
 6. **Heikin-Ashi is a lagging filter** — confirms trend, doesn't predict it. Don't use HA alone as an entry trigger.
 7. **Announcement radar uses an undocumented Binance endpoint** — has returned 403 before (confirmed Jan 2025). Fails silently, returns empty array. The main scan is completely unaffected if it goes dark.
 8. **GateIO filter fetches Gate.io's ticker list on every scan invocation** — if Gate.io is slow it eats into the 10s free-tier budget. Consider caching the Gate.io symbol set for the invocation lifetime, same pattern as `_binanceTradingCache` in `lib/binance.ts`.
-9. **Stale dev.log and crypto-scanner-3.0-changes/ in working tree** — untracked, not gitignored. Add to `.gitignore` if they shouldn't be committed. `public/` and `next-env.d.ts` are also untracked.
-10. **EADDRINUSE on port 3000** — a prior dev server was left running. Kill with `npx kill-port 3000` before starting a new session.
+9. **Liquidity zones are pivot-based, not order-book** — a zone at $X means price bounced at similar levels historically, not that buy orders actually sit there. SL below the zone still protects, but false positives are possible in choppy markets.
+10. **Diversity fill is random** — the random sample from the remaining pool has no signal filter, so some filler candidates will score NONE and be hidden. This is intentional (rotates fresh names into view), but means the actual result count can be below the 70 candidate cap.
 
 ---
 
@@ -239,6 +242,7 @@ Auto-refresh is every 5 minutes — well within limits.
 
 | Commit | Change |
 |--------|--------|
+| `f1179ea` | Fix stagnant coin pool (momentum≥35, mover≤30, diversity fill) and buy-liquidity accuracy (entry at zone, tighter proximity, SL below zone) |
 | `524dc5a` | Filter scan candidates to coins tradable on **both** Binance and GateIO — ensures every setup is executable on both exchanges |
 | `db27f4a` | v3.0 blended scan universe (`getScanCandidates`), new listing radar (`/api/announcements`), exit-liquidity detection, announcement radar |
 | `897e155` | 88-assertion stress test suite — all passing |
@@ -276,14 +280,20 @@ Fresh listing (≤48h) that has already pumped to an ATH then dropped ≥25% fro
 
 ## 19. Scan universe (`lib/binance.ts → getScanCandidates`)
 
-Blended two buckets, filtered to actively-TRADING symbols on Binance (`exchangeInfo` status check) AND listed on GateIO:
+Four priority buckets plus random diversity fill, filtered to actively-TRADING symbols on Binance (`exchangeInfo` status check) AND listed on GateIO:
 
-| Bucket | Slots | Filter |
-|--------|-------|--------|
-| Volume leaders | 12 (fixed) | Top USDT pairs by 24h quote volume — BTC/ETH/majors for context |
-| Big movers | 10–45 (default 35) | ≥15% 24h price change, ≥$300k USDT 24h volume |
+| Bucket | Slots (default) | Filter |
+|--------|----------------|--------|
+| Momentum movers | 35 | ≥8% 1h rolling change, ≥$50k vol — fastest rotation |
+| Extreme movers | 20 | ≥50% 24h change, ≥$20k vol — thin-book pumps |
+| Big movers | 30 | ≥15% 24h change, ≥$300k vol — mid-cap sweep |
+| Volume leaders | 18 | Top by 24h quote volume — BTC/ETH/majors for context |
+| Diversity fill | (up to cap) | Random sample from remaining pool — breaks stagnation |
 
-Query params: `?limit=35` (mover slots, clamped 10–45), `?minMove=15` (% move threshold).
+Hard cap: **70 total candidates** (modeled ~5-6s, not load-tested on live Vercel).
+Priority order ensures momentum/extreme movers are never trimmed.
+
+Query params: `?limit=40` (mover slots, clamped 10–55), `?minMove=15` (% move threshold).
 
 `_binanceTradingCache` is module-scoped — `exchangeInfo` is fetched once per serverless invocation, not per symbol.
 
