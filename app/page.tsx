@@ -454,7 +454,7 @@ export default function Home() {
   const [error,   setError]   = useState<string | null>(null);
   const [filter,  setFilter]  = useState<FilterTier>("ALL");
   const [nextIn,  setNextIn]  = useState(AUTO_REFRESH_MS);
-  const [tightMode, setTightMode] = useState(true); // default to tight mode (80% WR)
+  const [tightMode, setTightMode] = useState(false); // no longer used - fixed % TP/SL
 
   // Deliberately separate from `data`/`error` above: this comes from an
   // unofficial, best-effort endpoint (see lib/announcements.ts). If it
@@ -500,7 +500,7 @@ export default function Home() {
       // limit = how many "big mover" slots to scan (mid/low-cap, big % moves),
       // on top of a fixed 12 liquidity-leader slots (BTC/ETH/majors for context).
       // minMove = ignore moves smaller than this % (default 15, so 30/60/80% moves are covered).
-      const res = await fetch(`/api/scan?limit=40&minMove=15${tightMode ? "&tight=1" : ""}`);
+      const res = await fetch(`/api/scan?limit=40&minMove=15`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string })?.error ?? `HTTP ${res.status}`);
@@ -516,7 +516,7 @@ export default function Home() {
       setLoading(false);
       scheduleNext(); // schedule the next auto-refresh after every scan (success or failure)
     }
-  }, [scheduleNext, tightMode]);
+  }, [scheduleNext]);
 
   // Keep the ref current so the scheduled timeout always calls the latest runScan
   useEffect(() => {
@@ -589,22 +589,7 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => { setTightMode((t) => !t); }}
-                className="text-[10px] font-semibold px-2.5 py-1.5 rounded-pill"
-                style={{
-                  background: tightMode ? "rgba(0,212,160,0.15)" : "rgba(255,255,255,0.05)",
-                  border: `1px solid ${tightMode ? "rgba(0,212,160,0.4)" : "rgba(255,255,255,0.1)"}`,
-                  color: tightMode ? "var(--bull)" : "var(--text-tertiary)",
-                  transition: "all var(--transition-fast)",
-                  cursor: "pointer"
-                }}
-                title={tightMode ? "Tight mode: high win rate, small gains" : "Standard mode: R:R 1:2, ~33% win rate"}
-              >
-                {tightMode ? "🎯 High WR" : "⚖ R:R 2:1"}
-              </button>
-              <button
+            <button
                 onClick={runScan}
                 disabled={loading}
                 aria-label={loading ? "Scanning…" : "Run scan"}
@@ -636,7 +621,6 @@ export default function Home() {
                   <>⟳ Scan</>
                 )}
               </button>
-            </div>
           </div>
         </div>
 

@@ -35,7 +35,8 @@ export async function GET(req: Request) {
   const minMovePctRaw = parseFloat(url.searchParams.get("minMove") ?? "15");
   const minMovePct = Number.isFinite(minMovePctRaw) ? minMovePctRaw : 15;
 
-  const tightMode = url.searchParams.get("tight") === "1";
+  // tightMode param removed - using fixed % TP/SL now
+  const tightMode = false;
 
   try {
     const tickers = await getScanCandidates({

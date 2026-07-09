@@ -18,7 +18,7 @@ const BACKTEST_DAYS = 730;
 const TOP_N = 30; // number of symbols by current volume
 const SCAN_STEP_H = 12; // hours between scans (2/day = ~1460 steps over 2y)
 const MAX_CANDIDATES = 20;
-const TIGHT_MODE = true; // true = TP 0.5×ATR, SL 2.0×ATR (high WR); false = TP 2×ATR, SL 1×ATR
+const TIGHT_MODE = false; // no longer used - using fixed % TP/SL (TP1=+15%, TP2=+20%, SL=-10%)
 const HOLD_CANDLES = 336; // 14 days in 1h candles (336 = 14 × 24)
 const MIN_CANDLE_COUNT = 500; // skip symbols with too little history
 
@@ -123,9 +123,9 @@ function computeQuoteVolume(h1: Candle[]): number {
 
 async function main() {
   console.log("═".repeat(60));
-  console.log(`  Crypto Scanner v3.2 — 2-Year Backtest (${TIGHT_MODE ? "TIGHT MODE" : "NORMAL MODE"})`);
+  console.log(`  Crypto Scanner v3.2 — 2-Year Backtest`);
   console.log(`  Period: ${BACKTEST_DAYS} days, step ${SCAN_STEP_H}h, top ${TOP_N} symbols`);
-  console.log(`  TP=${TIGHT_MODE ? "0.5" : "2.0"}×ATR  SL=${TIGHT_MODE ? "2.0" : "1.0"}×ATR`);
+  console.log(`  TP1=6.0×ATR  TP2=10.0×ATR  SL=2.0×ATR`);
   console.log("═".repeat(60));
   console.log();
 
