@@ -1,5 +1,5 @@
 /**
- * Hyperopt — parameter tuning for Crypto Scanner v3.2
+ * Hyperopt — parameter tuning for Crypto Scanner v3.2 (regime-aware)
  *
  * Tests combinations of TP/SL multipliers, min-move filters, and signal
  * thresholds against historical data. Reports best-performing params.
@@ -219,7 +219,7 @@ async function runBacktest(params: ParamSet): Promise<HyperoptResult> {
 // ── Main ──────────────────────────────────────────────────────────────────────────
 async function main() {
   console.log("═".repeat(70));
-  console.log("  Crypto Scanner v3.2 — Hyperopt Parameter Tuning");
+  console.log("  Crypto Scanner v3.2 — Hyperopt (regime-aware)");
   console.log("═".repeat(70));
   console.log();
   console.log("  Search space:");

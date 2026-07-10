@@ -123,7 +123,7 @@ function computeQuoteVolume(h1: Candle[]): number {
 
 async function main() {
   console.log("═".repeat(60));
-  console.log(`  Crypto Scanner v3.2 — 2-Year Backtest`);
+  console.log(`  Crypto Scanner v3.2 — 2-Year Backtest (regime-aware)`);
   console.log(`  Period: ${BACKTEST_DAYS} days, step ${SCAN_STEP_H}h, top ${TOP_N} symbols`);
   console.log(`  TP1=6.0×ATR  TP2=10.0×ATR  SL=2.0×ATR`);
   console.log("═".repeat(60));
@@ -409,17 +409,27 @@ async function main() {
 
   // ── Report ──────────────────────────────────────────────────────────────────────
   console.log("\n" + "═".repeat(60));
-  console.log("  BACKTEST RESULTS");
+  console.log("  BACKTEST RESULTS — v3.2");
   console.log("═".repeat(60));
 
   const total = allSignals.length;
-  const wins = allSignals.filter((s) => s.result === "win").length;
-  const losses = allSignals.filter((s) => s.result === "loss").length;
-  const open = allSignals.filter((s) => s.result === "open").length;
-  const winRate = total > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : "N/A";
+  const closedSignals = allSignals.filter((s) => s.result !== "open");
+  const wins   = closedSignals.filter((s) => s.result === "win").length;
+  const losses = closedSignals.filter((s) => s.result === "loss").length;
+  const open   = total - closedSignals.length;
+  const winRate = (wins + losses) > 0 ? (wins / (wins + losses)) * 100 : 0;
 
-  const avgWin = allSignals.filter((s) => s.result === "win").reduce((a, b) => a + (b.pnlPct ?? 0), 0) / Math.max(1, wins);
-  const avgLoss = allSignals.filter((s) => s.result === "loss").reduce((a, b) => a + (b.pnlPct ?? 0), 0) / Math.max(1, losses);
+  const avgWin  = wins  > 0 ? closedSignals.filter((s) => s.result === "win").reduce((a, b) => a + (b.pnlPct ?? 0), 0) / wins  : 0;
+  const avgLoss = losses > 0 ? closedSignals.filter((s) => s.result === "loss").reduce((a, b) => a + (b.pnlPct ?? 0), 0) / losses : 0;
+
+  // Gross profit / loss for Profit Factor
+  const grossProfit  = closedSignals.filter((s) => s.result === "win").reduce((a, b) => a + (b.pnlPct ?? 0), 0);
+  const grossLoss    = Math.abs(closedSignals.filter((s) => s.result === "loss").reduce((a, b) => a + (b.pnlPct ?? 0), 0));
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
+
+  // Expected value (mean PnL% across all closed trades)
+  const allPnlPcts = closedSignals.map((s) => s.pnlPct!);
+  const avgTrade   = allPnlPcts.length > 0 ? allPnlPcts.reduce((a, b) => a + b, 0) / allPnlPcts.length : 0;
 
   // Simulate equity curve with 2% risk per trade
   let equity = 10_000;
@@ -428,38 +438,64 @@ async function main() {
   let maxDrawdownPct = 0;
   let totalPnl = 0;
   let trades = 0;
+  const allEquityReturns: number[] = [];
 
   for (const sig of allSignals) {
     if (sig.result === "open") continue;
     trades++;
-    const riskAmt = equity * 0.02; // 2% risk per trade
+    const riskAmt = equity * 0.02;
     const riskPct = (sig.entry - sig.stopLoss) / sig.entry;
     const actualPnl = sig.pnlPct!;
     const positionSize = riskPct > 0 ? riskAmt / (riskPct * sig.entry) : 0;
     const tradePnl = positionSize * actualPnl * sig.entry / 100;
+    const prevEquity = equity;
     equity += tradePnl;
     totalPnl += tradePnl;
+    allEquityReturns.push((equity - prevEquity) / prevEquity);
     equityCurve.push(equity);
     maxEquity = Math.max(maxEquity, equity);
     const dd = ((maxEquity - equity) / maxEquity) * 100;
     maxDrawdownPct = Math.max(maxDrawdownPct, dd);
   }
 
+  // Sharpe Ratio (annualized, using equity returns)
+  const meanReturn = allEquityReturns.length > 0
+    ? allEquityReturns.reduce((a, b) => a + b, 0) / allEquityReturns.length
+    : 0;
+  const returnVariance = allEquityReturns.length > 1
+    ? allEquityReturns.reduce((a, b) => a + (b - meanReturn) ** 2, 0) / (allEquityReturns.length - 1)
+    : 0;
+  const returnStd = Math.sqrt(returnVariance);
+  const sharpe = returnStd > 0 ? (meanReturn / returnStd) * Math.sqrt(365) : 0;
+
+  // Recovery Factor
+  const totalReturnPct = equity / 10000 - 1;
+  const recoveryFactor = maxDrawdownPct > 0 ? totalReturnPct / (maxDrawdownPct / 100) : totalReturnPct > 0 ? Infinity : 0;
+
   const avgBars = allSignals.filter((s) => s.barsHeld !== null).reduce((a, b) => a + (b.barsHeld ?? 0), 0) / Math.max(1, total);
 
-  // Per-tier breakdown
+  // Exposure time estimate: total bars held / total possible bars
+  const totalBarsHeld = allSignals.filter((s) => s.barsHeld !== null).reduce((a, b) => a + (b.barsHeld ?? 0), 0);
+  const totalPossibleBars = totalSteps * HOLD_CANDLES; // rough upper bound
+  const exposurePct = totalPossibleBars > 0 ? Math.min(100, (totalBarsHeld / totalPossibleBars) * 100) : 0;
+
   console.log(`\n  Overall`);
   console.log(`  ───────`);
-  console.log(`  Total signals: ${total}`);
-  console.log(`  Wins: ${wins}  Losses: ${losses}  Open/Expired: ${open}`);
-  console.log(`  Win rate: ${winRate}%`);
-  console.log(`  Avg win: ${avgWin.toFixed(2)}%  Avg loss: ${avgLoss.toFixed(2)}%`);
-  console.log(`  Avg hold time: ${avgBars.toFixed(0)} candles (${(avgBars / 24).toFixed(1)} days)`);
-  console.log(`  Final equity (2% risk): $${equity.toFixed(0)}`);
-  console.log(`  Total P&L: $${totalPnl.toFixed(0)} (${((equity - 10000) / 10000 * 100).toFixed(1)}%)`);
-  console.log(`  Max drawdown: ${maxDrawdownPct.toFixed(1)}%`);
-  console.log(`  Trades closed: ${trades}`);
+  console.log(`  Total signals:    ${total}`);
+  console.log(`  Closed trades:    ${wins + losses}  (${wins}W / ${losses}L)  Open: ${open}`);
+  console.log(`  Win rate:         ${winRate.toFixed(1)}%`);
+  console.log(`  Avg win:          ${avgWin.toFixed(2)}%  Avg loss: ${avgLoss.toFixed(2)}%`);
+  console.log(`  Avg trade:        ${avgTrade >= 0 ? "+" : ""}${avgTrade.toFixed(2)}%`);
+  console.log(`  Avg hold time:    ${avgBars.toFixed(0)}h (${(avgBars / 24).toFixed(1)}d)`);
+  console.log(`  Profit Factor:    ${profitFactor === Infinity ? "∞" : profitFactor.toFixed(2)}`);
+  console.log(`  Sharpe Ratio:     ${sharpe.toFixed(2)}`);
+  console.log(`  Recovery Factor:  ${recoveryFactor === Infinity ? "∞" : recoveryFactor.toFixed(2)}`);
+  console.log(`  Max DD:           ${maxDrawdownPct.toFixed(1)}%`);
+  console.log(`  Exposure time:    ${exposurePct.toFixed(1)}%`);
+  console.log(`  Final equity:     $${equity.toFixed(0)}`);
+  console.log(`  Total return:     ${totalReturnPct >= 0 ? "+" : ""}${(totalReturnPct * 100).toFixed(1)}%`);
 
+  // Per-tier breakdown
   const tiers = ["S", "A", "B"];
   console.log(`\n  Per-Tier Breakdown`);
   console.log(`  ─────────────────`);
@@ -472,7 +508,8 @@ async function main() {
     const wr = (w + l) > 0 ? ((w / (w + l)) * 100).toFixed(1) : "N/A";
     const aw = subset.filter((s) => s.result === "win").reduce((a, b) => a + (b.pnlPct ?? 0), 0) / Math.max(1, w);
     const al = subset.filter((s) => s.result === "loss").reduce((a, b) => a + (b.pnlPct ?? 0), 0) / Math.max(1, l);
-    console.log(`  Tier ${t}: ${subset.length} signals | ${w}W ${l}L ${o}O | WR ${wr}% | AvgW ${aw.toFixed(2)}% AvgL ${al.toFixed(2)}%`);
+    const pf = al !== 0 && l > 0 ? (aw * w) / Math.abs(al * l) : 0;
+    console.log(`  Tier ${t}: ${subset.length} sigs | ${w}W ${l}L ${o}O | WR ${wr}% | AvgW ${aw.toFixed(2)}% AvgL ${al.toFixed(2)}% | PF ${pf.toFixed(2)}`);
   }
 
   // Best / worst signals
@@ -505,13 +542,13 @@ async function main() {
   }
   const months = Array.from(monthMap.entries()).sort(([a], [b]) => a.localeCompare(b)).slice(-12);
   for (const [month, m] of months) {
-    const total = m.wins + m.losses;
-    const wr = total > 0 ? ((m.wins / total) * 100).toFixed(0) : "-";
-    console.log(`  ${month}: ${total} trades, ${m.wins}W ${m.losses}L, WR ${wr}%, total PnL ${m.totalPnl > 0 ? "+" : ""}${m.totalPnl.toFixed(1)}%`);
+    const tot = m.wins + m.losses;
+    const wr = tot > 0 ? ((m.wins / tot) * 100).toFixed(0) : "-";
+    console.log(`  ${month}: ${tot} trades, ${m.wins}W ${m.losses}L, WR ${wr}%, PnL ${m.totalPnl > 0 ? "+" : ""}${m.totalPnl.toFixed(1)}%`);
   }
 
   console.log("\n" + "═".repeat(60));
-  console.log("  Backtest complete.");
+  console.log("  Backtest complete. Next: npx tsx scripts/hyperopt.ts");
   console.log("═".repeat(60));
 }
 

@@ -18,6 +18,7 @@ import { computeZigZag, detectStructure, Pivot } from "./zigzag";
 import { findOrderBlocks, findFairValueGaps, findLiquidityZones, LiquidityZone } from "./smc";
 import { detectPattern, VolumeContext } from "./patterns";
 import type { FundingRate } from "./futures";
+import { classifyRegime, type RegimeSnapshot } from "./regime";
 
 /**
  * Listing-age heuristic — zero extra API calls.
@@ -132,6 +133,7 @@ export interface ScanResult {
   possibleExitLiquidity: boolean;
   athSinceListing: number | null;
   drawdownFromAthPct: number | null;
+  regime: RegimeSnapshot;
 }
 
 /** Only push a flag if it carries a signal (weak or strong). Suppresses noisy "none" entries. */
@@ -398,6 +400,12 @@ export function scanSymbol(
   const ind1h = computeIndicators(h1);
   const ind4h = computeIndicators(h4);
 
+  // ── Market regime classification ────────────────────────────
+  // Uses 1h indicators + candles to classify trend/volatility/overextension.
+  // Influences tier thresholds: trending regime boosts trend signals,
+  // mean-reverting boosts reversal signals, volatile regime reduces risk.
+  const regime = classifyRegime(h1, ind1h);
+
   const pivots1h   = computeZigZag(h1, 2);
   const pivots4h   = computeZigZag(h4, 2.5); // wider deviation on 4h for cleaner pivots
   const structure4h = detectStructure(pivots4h);
@@ -455,11 +463,36 @@ export function scanSymbol(
   const weakCount    = flags.filter((f) => f.weak && !f.strong).length;
   const signalCount  = strongCount + weakCount;
 
-  // Tier thresholds (v3.0: S requires ≥3 strong given the expanded 14-signal set)
+  // ── Regime-aware tier adjustment ─────────────────────────────
+  // Different market regimes favor different signal types. Adjust
+  // effective strongCount to reflect the current market context:
+  //   trending:      boost (trend-following signals work best here)
+  //   mean_reverting: boost reversal signals (RSI, VWAP, BB)
+  //   volatile:      suppress (wider noise = more false signals)
+  //   ranging/calm:  neutral (normal behavior)
+  let effectiveStrong = strongCount;
+  let effectiveWeak = weakCount;
+  if (regime.regime === "trending" && structure4h.trend !== "down") {
+    // In a strong uptrend, count weak flags as strong
+    effectiveStrong = Math.min(signalCount, strongCount + Math.floor(weakCount * 0.5));
+  } else if (regime.regime === "mean_reverting") {
+    // Mean-reverting favors reversal signals — already captured by
+    // the existing RSI/VWAP/BB flags, no extra boost needed
+  } else if (regime.regime === "volatile") {
+    // High volatility = noise. Reduce effective signal count by 1
+    // unless we have very strong signals already
+    if (effectiveStrong < 3) {
+      effectiveStrong = Math.max(0, effectiveStrong - 1);
+      effectiveWeak = Math.max(0, effectiveWeak - 1);
+    }
+  }
+  // Regime is included in the ScanResult so the UI can display it.
+
+  // Tier thresholds (v3.2: regime-aware effectiveStrong replaces raw strongCount)
   let tier: Tier = "NONE";
-  if (signalCount >= 5 && strongCount >= 3 && structure4h.trend !== "down") tier = "S";
-  else if (signalCount >= 3 && strongCount >= 1 && structure4h.trend !== "down") tier = "A";
-  else if (signalCount >= 2) tier = "B";
+  if (signalCount >= 5 && effectiveStrong >= 3 && structure4h.trend !== "down") tier = "S";
+  else if (signalCount >= 3 && effectiveStrong >= 1 && structure4h.trend !== "down") tier = "A";
+  else if (signalCount >= 2 && effectiveWeak >= 1) tier = "B";
 
   // Nearest buy-side liquidity below price — computed BEFORE entry/SL since
   // it now feeds into the entry price (limit order at the zone, not market).
@@ -512,10 +545,10 @@ export function scanSymbol(
     possibleExitLiquidity
       ? `⚠ Possible exit liquidity — pumped then ${drawdownFromAthPct?.toFixed(1)}% off ATH within ${listingAgeHours?.toFixed(1)}h of listing`
       : activeReasons.length > 0
-      ? `${activeReasons.join(" + ")} — 4h: ${structure4h.trend}${
+      ? `${activeReasons.join(" + ")} — ${regime.description} — 4h: ${structure4h.trend}${
           structure4h.event !== "NONE" ? ` (${structure4h.event})` : ""
         }`
-      : `No signals aligned — 4h: ${structure4h.trend}`;
+      : `No signals aligned — ${regime.description} — 4h: ${structure4h.trend}`;
 
   return {
     symbol,
@@ -541,6 +574,7 @@ export function scanSymbol(
     listingAgeHours,
     possibleExitLiquidity,
     athSinceListing,
-    drawdownFromAthPct
+    drawdownFromAthPct,
+    regime
   };
 }
