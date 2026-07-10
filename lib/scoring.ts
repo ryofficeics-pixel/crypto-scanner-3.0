@@ -17,6 +17,7 @@ import { computeIndicators, IndicatorSnapshot } from "./indicators";
 import { computeZigZag, detectStructure, Pivot } from "./zigzag";
 import { findOrderBlocks, findFairValueGaps, findLiquidityZones, LiquidityZone } from "./smc";
 import { detectPattern, VolumeContext } from "./patterns";
+import type { FundingRate } from "./futures";
 
 /**
  * Listing-age heuristic — zero extra API calls.
@@ -144,7 +145,8 @@ function evaluateFlags(
   ind4h: IndicatorSnapshot,
   candles1h: Candle[],
   candles4h: Candle[],
-  zones1h: LiquidityZone[]   // pre-computed — passed in to avoid duplicate work
+  zones1h: LiquidityZone[],   // pre-computed — passed in to avoid duplicate work
+  funding?: FundingRate
 ): SignalFlag[] {
   const flags: SignalFlag[] = [];
 
@@ -361,6 +363,16 @@ function evaluateFlags(
     });
   }
 
+  // ── 15. Funding rate extreme (Futures shorts squeeze) ────────
+  if (funding && funding.signal === "extreme_short") {
+    pushFlag(flags, {
+      key: "funding",
+      label: `Funding ${funding.fundingRate.toFixed(3)}% (short squeeze)`,
+      weak: false,
+      strong: true
+    });
+  }
+
   return flags;
 }
 
@@ -368,7 +380,8 @@ export function scanSymbol(
   symbol: string,
   candles: { m15: Candle[]; h1: Candle[]; h4: Candle[] },
   meta: { priceChangePercent: number; quoteVolume: number },
-  tightMode = false
+  tightMode = false,
+  funding?: FundingRate
 ): ScanResult | null {
   const { m15, h1, h4 } = candles;
   if (!m15.length || !h1.length || !h4.length) return null;
@@ -408,7 +421,7 @@ export function scanSymbol(
   const pattern4h = detectPattern(pivots4h, volCtx4h);
   const pattern   = pattern4h.type !== "none" ? pattern4h : pattern1h;
 
-  const flags = evaluateFlags(ind15, ind1h, ind4h, h1, h4, zones4h);
+  const flags = evaluateFlags(ind15, ind1h, ind4h, h1, h4, zones4h, funding);
 
   // ── Pattern signal ────────────────────────────────────────────
   if (pattern.type !== "none") {

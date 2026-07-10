@@ -12,6 +12,7 @@
 import { NextResponse } from "next/server";
 import { getScanCandidates, getMultiTimeframeKlines } from "@/lib/binance";
 import { scanSymbol } from "@/lib/scoring";
+import { getFundingSignals } from "@/lib/futures";
 
 export const runtime = "nodejs"; // edge runtime can't use technicalindicators (node APIs)
 export const dynamic = "force-dynamic";
@@ -52,6 +53,27 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "No USDT pairs returned from Binance" }, { status: 502 });
     }
 
+    // ── Futures funding signals (shorts squeeze detection) ──────
+    const fundingMap = await getFundingSignals();
+
+    // ── Multi-pair correlation filter ───────────────────────────
+    // Check BTC 1h performance: if BTC is dumping hard, altcoin buy
+    // signals are less reliable (correlated selloff). When BTC 1h is
+    // down >2%, we suppress all altcoin tiers below A.
+    let btcBearishRisk = false;
+    try {
+      const btcKlinesRes = await fetch(
+        "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=2"
+      );
+      const btcRaw: unknown[][] = await btcKlinesRes.json();
+      if (btcRaw.length >= 2) {
+        const prevClose = parseFloat(btcRaw[0][4] as string);
+        const curClose  = parseFloat(btcRaw[1][4] as string);
+        const btc1hPct  = ((curClose - prevClose) / prevClose) * 100;
+        btcBearishRisk = btc1hPct < -2;
+      }
+    } catch { /* fail open */ }
+
     // Fetch klines concurrently with a concurrency cap to avoid rate-limiting.
     // Binance weight budget is 6000/min — even 70 symbols (~420 weight) is
     // nowhere near that limit, so the real constraint is wall-clock time on
@@ -67,10 +89,20 @@ export async function GET(req: Request) {
       const batchResults = await Promise.allSettled(
         batch.map(async (ticker) => {
           const candles = await getMultiTimeframeKlines(ticker.symbol);
-          return scanSymbol(ticker.symbol, candles, {
+          const funding = fundingMap.get(ticker.symbol);
+          const result = scanSymbol(ticker.symbol, candles, {
             priceChangePercent: ticker.priceChangePercent,
             quoteVolume: ticker.quoteVolume
-          }, tightMode);
+          }, tightMode, funding);
+          // Correlation filter: if BTC is dumping, suppress altcoin tiers below A
+          if (result && btcBearishRisk && result.tier !== "NONE" && ticker.symbol !== "BTCUSDT") {
+            // Downgrade B to NONE during BTC-led selloffs (B-tier is weakest signal)
+            if (result.tier === "B") result.tier = "NONE";
+            // A-tier becomes B-tier (still visible but de-emphasized)
+            if (result.tier === "A") result.tier = "B";
+            // S-tier stays S (strong enough to survive market context)
+          }
+          return result;
         })
       );
 
