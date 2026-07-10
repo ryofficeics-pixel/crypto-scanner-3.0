@@ -76,6 +76,18 @@ function TierBadge({ tier }: { tier: Tier }) {
   );
 }
 
+function RegimeBadge({ regime }: { regime: string }) {
+  const cfg: Record<string, { label: string; cls: string }> = {
+    trending:      { label: "TREND ↑",   cls: "badge-trend" },
+    ranging:       { label: "RANGE ◆",   cls: "badge-range" },
+    mean_reverting:{ label: "MEAN RV",   cls: "badge-meanr" },
+    volatile:      { label: "HIGH VOL",  cls: "badge-vol" },
+    calm:          { label: "CALM",      cls: "badge-calm" },
+  };
+  const c = cfg[regime] ?? { label: regime, cls: "" };
+  return <span className={c.cls} style={{ fontSize: 10, padding: "0 6px", borderRadius: 3 }}>{c.label}</span>;
+}
+
 function StructureBadge({ event }: { event: string }) {
   if (!event || event === "NONE") return null;
   const isChoCH   = event.startsWith("CHOCH");
@@ -337,7 +349,9 @@ function ResultCard({ r, index: _index }: { r: ScanResult; index: number }) {
             <div className="text-[11px] mt-0.5" style={{ color: "var(--text-tertiary)" }}>
               <span className={trendCls}>{trendIcon} 4h {r.trend4h}</span>
               <span className="mx-1.5" style={{ color: "var(--divider)" }}>·</span>
-              {r.signalCount} signals
+              <RegimeBadge regime={r.regime?.regime ?? "ranging"} />
+              <span className="mx-1.5" style={{ color: "var(--divider)" }}>·</span>
+              {r.signalCount} sigs
               <span className="mx-1.5" style={{ color: "var(--divider)" }}>·</span>
               {fmtVol(r.quoteVolume)}
             </div>

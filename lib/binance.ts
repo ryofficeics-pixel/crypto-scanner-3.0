@@ -155,17 +155,6 @@ async function getRollingWindowChanges(
 }
 
 /**
- * Returns top N USDT pairs by 24h quote volume, excluding leveraged tokens
- * and stablecoin-to-stablecoin pairs. Kept for backward compatibility /
- * "liquidity leaders" mode.
- */
-export async function getTopUsdtPairsByVolume(limit = 25): Promise<Ticker24hr[]> {
-  const usdtPairs = await getAllUsdtPairs();
-  usdtPairs.sort((a, b) => b.quoteVolume - a.quoteVolume);
-  return usdtPairs.slice(0, limit);
-}
-
-/**
  * Blended universe: this is the function the scanner should use.
  *
  * Big-cap coins (BTC, ETH, SOL...) rarely move more than ~5% in 24h, so a

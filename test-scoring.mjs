@@ -115,32 +115,32 @@ assert('EMA200 null on 10 candles', ind10.ema200 === null);
 assert('EMA50 null on 10 candles', ind10.ema50 === null);
 assert('MACD null on 10 candles (needs 26+9)', ind10.macdHist === null);
 
-// ── SECTION 3: ATR TP/SL formula ─────────────────────────────────────────────
-console.log('\n══ 3. ATR TP/SL FORMULA ══');
+// ── SECTION 3: ATR TP/SL formula (v3.2: 6×ATR TP1, 10×ATR TP2, 2×ATR SL) ──
+console.log('\n══ 3. ATR TP/SL FORMULA (v3.2) ══');
 
 const price = ind.close;
 const atr   = ind.atr;
-const sl    = price - 1.0 * atr;
-const tp1   = price + 2.0 * atr;
-const tp2   = price + 3.5 * atr;
+const sl    = price - 2.0 * atr;
+const tp1   = price + 6.0 * atr;
+const tp2   = price + 10.0 * atr;
 const rr1   = (tp1 - price) / (price - sl);
 const rr2   = (tp2 - price) / (price - sl);
 
 assert('SL < price', sl < price);
 assert('TP1 > price', tp1 > price);
 assert('TP2 > TP1', tp2 > tp1);
-assert('RR1 exactly 2.0', Math.abs(rr1 - 2.0) < 1e-10, `got ${rr1}`);
-assert('RR2 exactly 3.5', Math.abs(rr2 - 3.5) < 1e-10, `got ${rr2}`);
+assert('RR1 exactly 3.0 (6×/2×)', Math.abs(rr1 - 3.0) < 1e-10, `got ${rr1}`);
+assert('RR2 exactly 5.0 (10×/2×)', Math.abs(rr2 - 5.0) < 1e-10, `got ${rr2}`);
 assert('RR1 >= 2.0 (passes gate)', rr1 >= 2.0);
-assert('SL pct reasonable (<5%)', (price - sl) / price < 0.05, `sl is ${((price-sl)/price*100).toFixed(2)}% below`);
+assert('SL pct reasonable (<10%)', (price - sl) / price < 0.10, `sl is ${((price-sl)/price*100).toFixed(2)}% below`);
 
 // Test with micro price (SHIB-like)
 const shibCandles = genCandles(250, 0.000015, 0.0001, 0.02);
 const shibInd = computeInd(shibCandles);
 const shibPrice = shibInd.close;
 const shibATR = shibInd.atr ?? shibPrice * 0.02;
-const shibSL = shibPrice - 1.0 * shibATR;
-const shibTP1 = shibPrice + 2.0 * shibATR;
+const shibSL = shibPrice - 2.0 * shibATR;
+const shibTP1 = shibPrice + 6.0 * shibATR;
 assert('SHIB SL > 0', shibSL > 0, `got ${shibSL}`);
 assert('SHIB TP1 > SL', shibTP1 > shibSL);
 assert('SHIB no NaN', !isNaN(shibSL) && !isNaN(shibTP1));
@@ -186,29 +186,37 @@ assert('Vol strong: 1.8x threshold', (1.8 / 1.0) >= 1.8);
 assert('Vol weak: 1.2x > 1.0', 1.2 > 1.0);
 assert('Vol not weak: 0.9x < 1.0', !(0.9 > 1.0));
 
-// ── SECTION 5: Tier thresholds ───────────────────────────────────────────────
-console.log('\n══ 5. TIER THRESHOLD LOGIC ══');
+// ── SECTION 5: Tier thresholds (v3.2 regime-aware) ────────────────────────────
+console.log('\n══ 5. TIER THRESHOLD LOGIC (v3.2 regime-aware) ══');
 
-function assignTier(signalCount, strongCount, trend4h) {
-  if (signalCount >= 5 && strongCount >= 3 && trend4h !== 'down') return 'S';
-  if (signalCount >= 3 && strongCount >= 1 && trend4h !== 'down') return 'A';
-  if (signalCount >= 2) return 'B';
+function assignTier(signalCount, strongCount, trend4h, regime) {
+  const weakCount = signalCount - strongCount;
+  let effStrong = strongCount;
+  let effWeak = weakCount;
+  if (regime === 'trending' && trend4h !== 'down') {
+    effStrong = Math.min(signalCount, strongCount + Math.floor(weakCount * 0.5));
+  } else if (regime === 'volatile' && effStrong < 3) {
+    effStrong = Math.max(0, effStrong - 1);
+    effWeak = Math.max(0, effWeak - 1);
+  }
+  if (signalCount >= 5 && effStrong >= 3 && trend4h !== 'down') return 'S';
+  if (signalCount >= 3 && effStrong >= 1 && trend4h !== 'down') return 'A';
+  if (signalCount >= 2 && effWeak >= 1) return 'B';
   return 'NONE';
 }
 
-assert('S: 5sig 3strong up', assignTier(5,3,'up') === 'S');
-assert('S: 7sig 4strong ranging', assignTier(7,4,'ranging') === 'S');
-assert('NOT S: 5sig 3strong DOWN', assignTier(5,3,'down') !== 'S', assignTier(5,3,'down'));
-assert('A: 3sig 1strong up', assignTier(3,1,'up') === 'A');
-assert('A: 4sig 2strong ranging', assignTier(4,2,'ranging') === 'A');
-assert('NOT A: 3sig 1strong DOWN', assignTier(3,1,'down') !== 'A', assignTier(3,1,'down'));
-assert('B: 2sig 0strong down', assignTier(2,0,'down') === 'B');
-assert('B: 2sig down (no strong required)', assignTier(2,0,'down') === 'B');
-assert('NONE: 1sig', assignTier(1,1,'up') === 'NONE');
-assert('NONE: 0sig', assignTier(0,0,'ranging') === 'NONE');
-// Edge: 5 signals but only 2 strong → A not S
-assert('NOT S with only 2 strong: 5sig 2strong', assignTier(5,2,'up') !== 'S');
-assert('Falls to A: 5sig 2strong up', assignTier(5,2,'up') === 'A');
+assert('S: 5sig 3strong up trending', assignTier(5,3,'up','trending') === 'S');
+assert('S: 7sig 4strong ranging ranging', assignTier(7,4,'ranging','ranging') === 'S');
+assert('NOT S: 5sig 3strong DOWN', assignTier(5,3,'down','trending') !== 'S');
+assert('A: 3sig 1strong up ranging', assignTier(3,1,'up','ranging') === 'A');
+assert('NOT A: 3sig 1strong DOWN', assignTier(3,1,'down','ranging') !== 'A');
+assert('B: 2sig 0strong down ranging', assignTier(2,0,'down','ranging') === 'B');
+assert('NONE: 1sig', assignTier(1,1,'up','ranging') === 'NONE');
+assert('NONE: 0sig', assignTier(0,0,'ranging','ranging') === 'NONE');
+// Trending boost: 2sig 0strong trending up → effStrong=1 → B
+assert('Trending boost 2sig 0strong', assignTier(2,0,'up','trending') === 'B');
+// Volatile suppress: 3sig 1strong volatile → effStrong=0, effWeak=0 → NONE
+assert('Volatile suppress 3sig 1strong', assignTier(3,1,'up','volatile') === 'NONE');
 
 // ── SECTION 6: ZigZag trailing flush edge cases ──────────────────────────────
 console.log('\n══ 6. ZIGZAG TRAILING FLUSH ══');

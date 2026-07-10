@@ -17,5 +17,5 @@
     "paths": { "@/*": ["./*"] }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules", "crypto-scanner-3.0-changes"]
+  "exclude": ["node_modules", "crypto-scanner-3.0-changes", "ref"]
 }
