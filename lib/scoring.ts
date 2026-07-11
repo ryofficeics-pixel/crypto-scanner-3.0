@@ -19,6 +19,7 @@ import { findOrderBlocks, findFairValueGaps, findLiquidityZones, LiquidityZone }
 import { detectPattern, VolumeContext } from "./patterns";
 import type { FundingRate } from "./futures";
 import { classifyRegime, type RegimeSnapshot } from "./regime";
+import type { PriceSource } from "./price-validator";
 
 /**
  * Listing-age heuristic — zero extra API calls.
@@ -134,6 +135,8 @@ export interface ScanResult {
   athSinceListing: number | null;
   drawdownFromAthPct: number | null;
   regime: RegimeSnapshot;
+  priceSource: PriceSource;
+  tickerLastPrice: number | null;
 }
 
 /** Only push a flag if it carries a signal (weak or strong). Suppresses noisy "none" entries. */
@@ -381,7 +384,7 @@ function evaluateFlags(
 export function scanSymbol(
   symbol: string,
   candles: { m15: Candle[]; h1: Candle[]; h4: Candle[] },
-  meta: { priceChangePercent: number; quoteVolume: number },
+  meta: { priceChangePercent: number; quoteVolume: number; livePrice?: number },
   tightMode = false,
   funding?: FundingRate
 ): ScanResult | null {
@@ -393,7 +396,11 @@ export function scanSymbol(
   const { possibleExitLiquidity, athSinceListing, drawdownFromAthPct } =
     detectExitLiquidityPattern(isNewListing, m15, h1, h4);
 
-  const price = h1[h1.length - 1].close;
+  const candleClose = h1[h1.length - 1].close;
+  const livePrice = meta.livePrice;
+  const useLive = livePrice !== undefined && Number.isFinite(livePrice) && livePrice > 0;
+  const price = useLive ? livePrice : candleClose;
+  const priceSource: PriceSource = useLive ? "ticker_live" : "candle_close";
   if (!Number.isFinite(price) || price <= 0) return null;
 
   const ind15 = computeIndicators(m15);
@@ -575,6 +582,8 @@ export function scanSymbol(
     possibleExitLiquidity,
     athSinceListing,
     drawdownFromAthPct,
-    regime
+    regime,
+    priceSource,
+    tickerLastPrice: livePrice ?? null
   };
 }

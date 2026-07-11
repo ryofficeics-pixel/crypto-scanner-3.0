@@ -13,6 +13,7 @@ import { NextResponse } from "next/server";
 import { getScanCandidates, getMultiTimeframeKlines } from "@/lib/binance";
 import { scanSymbol } from "@/lib/scoring";
 import { getFundingSignals } from "@/lib/futures";
+import { getGateTickers } from "@/lib/price-validator";
 
 export const runtime = "nodejs"; // edge runtime can't use technicalindicators (node APIs)
 export const dynamic = "force-dynamic";
@@ -53,6 +54,9 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "No USDT pairs returned from Binance" }, { status: 502 });
     }
 
+    // ── Cross-reference prices with Gate.io ─────────────────────
+    const gatePrices = await getGateTickers(tickers.map((t) => t.symbol));
+
     // ── Futures funding signals (shorts squeeze detection) ──────
     const fundingMap = await getFundingSignals();
 
@@ -92,8 +96,23 @@ export async function GET(req: Request) {
           const funding = fundingMap.get(ticker.symbol);
           const result = scanSymbol(ticker.symbol, candles, {
             priceChangePercent: ticker.priceChangePercent,
-            quoteVolume: ticker.quoteVolume
+            quoteVolume: ticker.quoteVolume,
+            livePrice: ticker.lastPrice
           }, tightMode, funding);
+
+          // Validate price cross-reference against Gate.io
+          if (result) {
+            const gatePx = gatePrices.get(ticker.symbol);
+            if (gatePx !== undefined && gatePx > 0) {
+              const diffPct = Math.abs(result.price - gatePx) / gatePx;
+              if (diffPct > 0.03) {
+                console.warn(
+                  `[route] REJECTED ${ticker.symbol}: gate=${gatePx} scanner=${result.price} diff=${(diffPct * 100).toFixed(1)}%`
+                );
+                return null; // reject signal with >3% cross-exchange discrepancy
+              }
+            }
+          }
           // Correlation filter: if BTC is dumping, suppress altcoin tiers below A
           if (result && btcBearishRisk && result.tier !== "NONE" && ticker.symbol !== "BTCUSDT") {
             // Downgrade B to NONE during BTC-led selloffs (B-tier is weakest signal)

@@ -363,6 +363,9 @@ function ResultCard({ r, index: _index }: { r: ScanResult; index: number }) {
           <div className="text-[11px] font-medium mt-0.5" style={{ color: pctColor }}>
             {r.priceChangePercent >= 0 ? "+" : ""}{r.priceChangePercent.toFixed(2)}%
           </div>
+          <div className="text-[10px] text-gray-500 mt-0.5">
+            {r.priceSource === "ticker_live" ? "Binance" : r.priceSource === "gate_live" ? "Gate.io" : r.priceSource === "candle_close" ? "1h close" : r.priceSource}
+          </div>
         </div>
       </div>
 
